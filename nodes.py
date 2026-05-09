@@ -184,6 +184,8 @@ class OGN_XYLoraAxis:
                 if not lora or str(lora).lower() == "none":
                     continue
                 strength = float(row.get("strength_model", row.get("strength", 1.0)))
+                if not math.isfinite(strength):
+                    strength = 1.0
                 loras.append({"lora": lora, "strength_model": strength, "strength_clip": strength})
             values.append({"set": set_index, "loras": loras})
         return ({"type": "LoRA", "values": values},)

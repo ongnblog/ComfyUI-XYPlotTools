@@ -366,6 +366,69 @@ function addLoraValueWidget(node, nodeData, set, item, kind, value = null) {
   });
 }
 
+function normalizeLoraBaseWidgets(node, nodeData) {
+  const options = nodeData ? getOptions(nodeData, "lora_1") : ["None"];
+  const fallbackLora = options.includes("None") ? "None" : (options[0] ?? "None");
+  for (const widget of node.widgets || []) {
+    if (widget.name === "lora_1") {
+      if (widget.value == null || !options.includes(widget.value)) {
+        widget.value = fallbackLora;
+      }
+    } else if (widget.name === "strength_model_1") {
+      const value = Number(widget.value);
+      if (!Number.isFinite(value)) {
+        widget.value = 1.0;
+      }
+    }
+  }
+}
+
+function getLoraBaseValues(node) {
+  const loraWidget = (node.widgets || []).find((widget) => widget.name === "lora_1");
+  const strengthWidget = (node.widgets || []).find((widget) => widget.name === "strength_model_1");
+  return {
+    lora_1: loraWidget?.value,
+    strength_model_1: strengthWidget?.value,
+  };
+}
+
+function restoreLoraBaseValues(node, nodeData, saved) {
+  if (!saved || typeof saved !== "object") {
+    normalizeLoraBaseWidgets(node, nodeData);
+    return;
+  }
+  const options = getOptions(nodeData, "lora_1");
+  for (const widget of node.widgets || []) {
+    if (widget.name === "lora_1") {
+      if (saved.lora_1 != null && options.includes(saved.lora_1)) {
+        widget.value = saved.lora_1;
+      }
+    } else if (widget.name === "strength_model_1") {
+      const value = Number(saved.strength_model_1);
+      if (Number.isFinite(value)) {
+        widget.value = value;
+      }
+    }
+  }
+  normalizeLoraBaseWidgets(node, nodeData);
+}
+
+function inferLoraBaseValuesFromWidgets(info, nodeData) {
+  if (!Array.isArray(info?.widgets_values)) {
+    return null;
+  }
+  const options = getOptions(nodeData, "lora_1");
+  const lora = info.widgets_values.find((value) => typeof value === "string" && options.includes(value));
+  const strength = info.widgets_values.find((value) => Number.isFinite(Number(value)));
+  if (lora == null && strength == null) {
+    return null;
+  }
+  return {
+    lora_1: lora,
+    strength_model_1: strength,
+  };
+}
+
 function loraItemCount(node, set) {
   const items = new Set();
   for (const widget of node.widgets || []) {
@@ -443,6 +506,7 @@ function moveLoraButtonsToEnd(node) {
 
 function ensureLoraButtons(node, nodeData) {
   node.serialize_widgets = true;
+  normalizeLoraBaseWidgets(node, nodeData);
   ensureLoraSetHeader(node, 1);
   if (!node.ognAddLoraButton) {
     node.ognAddLoraButton = node.addWidget("button", "+ Add LoRA", null, () => {
@@ -472,10 +536,12 @@ function ensureLoraButtons(node, nodeData) {
       addLoraItemRemoveButton(node, set, item);
     }
   }
+  normalizeLoraBaseWidgets(node, nodeData);
   moveLoraButtonsToEnd(node);
 }
 
-function saveLoraDynamicWidgets(node) {
+function saveLoraDynamicWidgets(node, nodeData) {
+  normalizeLoraBaseWidgets(node, nodeData);
   return (node.widgets || [])
     .filter((widget) => {
       const parsed = parseLoraWidgetName(widget.name);
@@ -498,6 +564,7 @@ function restoreLoraDynamicWidgets(node, nodeData, saved) {
   for (const row of [...values.values()].sort((a, b) => a.set - b.set || a.item - b.item)) {
     addLoraToSet(node, nodeData, row.set, row.item, row);
   }
+  normalizeLoraBaseWidgets(node, nodeData);
   moveLoraButtonsToEnd(node);
   resizeNode(node);
 }
@@ -544,6 +611,7 @@ app.registerExtension({
       configure?.apply(this, arguments);
       if (config.loraSets) {
         ensureLoraButtons(this, nodeData);
+        restoreLoraBaseValues(this, nodeData, info?.ogn_lora_base ?? inferLoraBaseValuesFromWidgets(info, nodeData));
         restoreLoraDynamicWidgets(this, nodeData, info?.ogn_dynamic_widgets);
         return;
       }
@@ -555,7 +623,9 @@ app.registerExtension({
     nodeType.prototype.onSerialize = function (data) {
       onSerialize?.apply(this, arguments);
       if (config.loraSets) {
-        data.ogn_dynamic_widgets = saveLoraDynamicWidgets(this);
+        normalizeLoraBaseWidgets(this, nodeData);
+        data.ogn_lora_base = getLoraBaseValues(this);
+        data.ogn_dynamic_widgets = saveLoraDynamicWidgets(this, nodeData);
         return;
       }
       data.ogn_dynamic_widgets = saveDynamicWidgets(this, config);
