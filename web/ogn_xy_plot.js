@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { ComfyWidgets } from "../../scripts/widgets.js";
 
 const NODE_CONFIG = {
   OGN_XYCheckpointAxis: {
@@ -21,7 +22,7 @@ const NODE_CONFIG = {
     label: "Prompt S/R",
     button: "+ Add Replacement",
     removeButton: "- Remove Replacement",
-    rows: [{ kind: "string", prefix: "replace_", value: "" }],
+    rows: [{ kind: "string", prefix: "replace_", value: "", multiline: true }],
   },
 };
 
@@ -97,6 +98,16 @@ function addWidget(node, row, index, nodeData, value) {
       precision: 3,
     });
   } else {
+    if (row.multiline === true && ComfyWidgets?.STRING) {
+      const widget = ComfyWidgets.STRING(
+        node,
+        name,
+        ["STRING", { multiline: true, default: value ?? row.value ?? "" }],
+        app
+      ).widget;
+      widget.value = value ?? row.value ?? "";
+      return;
+    }
     node.addWidget("text", name, value ?? row.value ?? "", null, {});
   }
 }
@@ -111,6 +122,7 @@ function removeRow(node, config, rowIndex) {
     }
     const widgetIndex = node.widgets.indexOf(widget);
     if (widgetIndex >= 0) {
+      widget.onRemove?.();
       node.widgets.splice(widgetIndex, 1);
     }
   }
@@ -183,7 +195,10 @@ function removeLastRow(node, config) {
       const index = Number(widget.name.slice(row.prefix.length));
       if (index === lastIndex) {
         const widgetIndex = node.widgets.indexOf(widget);
-        if (widgetIndex >= 0) node.widgets.splice(widgetIndex, 1);
+        if (widgetIndex >= 0) {
+          widget.onRemove?.();
+          node.widgets.splice(widgetIndex, 1);
+        }
       }
     }
   }

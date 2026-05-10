@@ -196,8 +196,8 @@ class OGN_XYPromptSRAxis:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "search": ("STRING", {"multiline": False, "default": ""}),
-                "replace_1": ("STRING", {"multiline": False, "default": ""}),
+                "search": ("STRING", {"multiline": True, "default": ""}),
+                "replace_1": ("STRING", {"multiline": True, "default": ""}),
             },
             "optional": FlexibleOptionalInputType(),
         }
