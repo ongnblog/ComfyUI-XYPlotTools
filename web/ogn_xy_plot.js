@@ -14,6 +14,12 @@ const NODE_CONFIG = {
     rowRemoveButton: "- Remove",
     rows: [{ kind: "combo", prefix: "diffusion_model_", source: "diffusion_model_1" }],
   },
+  OGN_XYSamplerAxis: {
+    label: "Sampler",
+    button: "+ Add Sampler",
+    rowRemoveButton: "- Remove",
+    rows: [{ kind: "combo", prefix: "sampler_", source: "sampler_1" }],
+  },
   OGN_XYLoraAxis: {
     label: "LoRA",
     loraSets: true,

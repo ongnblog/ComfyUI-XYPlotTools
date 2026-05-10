@@ -135,6 +135,27 @@ class OGN_XYDiffusionModelAxis:
         return ({"type": "Diffusion Model", "values": values},)
 
 
+class OGN_XYSamplerAxis:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "sampler_1": (_sampler_names(),),
+            },
+            "optional": FlexibleOptionalInputType(),
+        }
+
+    RETURN_TYPES = ("OGN_XY_AXIS",)
+    RETURN_NAMES = ("axis",)
+    FUNCTION = "build_axis"
+    CATEGORY = "OGN/XY Plot"
+
+    def build_axis(self, sampler_1, **kwargs):
+        values = [sampler_1] + _sorted_kwargs(kwargs, "sampler_")
+        values = [value for value in values if value]
+        return ({"type": "Sampler", "values": values},)
+
+
 class OGN_XYLoraAxis:
     @classmethod
     def INPUT_TYPES(cls):
@@ -227,7 +248,6 @@ class OGN_XYPrimitiveAxis:
             "Seed",
             "Steps",
             "CFG",
-            "Sampler",
             "Scheduler",
             "Denoise",
             "VAE",
@@ -722,6 +742,7 @@ NODE_CLASS_MAPPINGS = {
     "OGN_XYPlot": OGN_XYPlot,
     "OGN_XYCheckpointAxis": OGN_XYCheckpointAxis,
     "OGN_XYDiffusionModelAxis": OGN_XYDiffusionModelAxis,
+    "OGN_XYSamplerAxis": OGN_XYSamplerAxis,
     "OGN_XYLoraAxis": OGN_XYLoraAxis,
     "OGN_XYPromptSRAxis": OGN_XYPromptSRAxis,
     "OGN_XYPrimitiveAxis": OGN_XYPrimitiveAxis,
@@ -731,6 +752,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "OGN_XYPlot": "OGN_XY Plot",
     "OGN_XYCheckpointAxis": "OGN_XY Checkpoint Axis",
     "OGN_XYDiffusionModelAxis": "OGN_XY Diffusion Model Axis",
+    "OGN_XYSamplerAxis": "OGN_XY Sampler Axis",
     "OGN_XYLoraAxis": "OGN_XY LoRA Axis",
     "OGN_XYPromptSRAxis": "OGN_XY Prompt S/R Axis",
     "OGN_XYPrimitiveAxis": "OGN_XY Primitive Axis",
