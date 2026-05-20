@@ -267,8 +267,14 @@ class OGN_XYPrimitiveAxis:
     CATEGORY = "OGN/XY Plot"
 
     def build_axis(self, axis_type, value_1, **kwargs):
-        values = [value_1] + _sorted_kwargs(kwargs, "value_")
-        values = [value for value in values if value is not None and str(value) != ""]
+        values = []
+        for value in [value_1] + _sorted_kwargs(kwargs, "value_"):
+            if value is None:
+                continue
+            for line in str(value).replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+                line = line.strip()
+                if line:
+                    values.append(line)
         return ({"type": axis_type, "values": values},)
 
 

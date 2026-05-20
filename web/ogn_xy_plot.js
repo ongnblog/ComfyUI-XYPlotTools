@@ -41,6 +41,31 @@ function getOptions(nodeData, source) {
   return ["None"];
 }
 
+function getRegisteredExtensions() {
+  const candidates = [
+    app.extensions,
+    app.extensionManager?.extensions,
+    app.extensionManager?.registeredExtensions,
+    app.extensionManager?.registrations,
+  ];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      return candidate;
+    }
+    if (candidate instanceof Map) {
+      return [...candidate.values()];
+    }
+  }
+  return [];
+}
+
+function refreshModelManagerWidgets(node) {
+  const extension = getRegisteredExtensions().find(
+    (item) => item?.name === "ComfyUI.ModelManager.ThumbnailTooltips"
+  );
+  extension?.nodeCreated?.(node);
+}
+
 function nextIndex(node, config) {
   let index = 1;
   for (const widget of node.widgets || []) {
@@ -95,7 +120,9 @@ function addWidget(node, row, index, nodeData, value) {
   if (row.kind === "combo") {
     const options = getOptions(nodeData, row.source);
     const selected = options.includes(value) ? value : (value ?? options[0] ?? "None");
-    node.addWidget("combo", name, selected, null, { values: options });
+    const widget = node.addWidget("combo", name, selected, null, { values: options });
+    refreshModelManagerWidgets(node);
+    return widget;
   } else if (row.kind === "float") {
     node.addWidget("number", name, value ?? row.value ?? 1.0, null, {
       min: -20,
@@ -325,7 +352,7 @@ function nextLoraItem(node, set) {
 }
 
 function addCustomWidgetBeforeLoraButtons(node, widget) {
-  const buttonIndexes = [node.ognAddLoraButton, node.ognAddSetButton, node.ognButtonSpacer]
+  const buttonIndexes = [node.ognAddSetButton, node.ognButtonSpacer]
     .map((button) => node.widgets?.indexOf(button) ?? -1)
     .filter((index) => index >= 0);
   const index = buttonIndexes.length ? Math.min(...buttonIndexes) : (node.widgets?.length ?? 0);
@@ -376,8 +403,9 @@ function addLoraValueWidget(node, nodeData, set, item, kind, value = null) {
   if (kind === "lora") {
     const options = getOptions(nodeData, "lora_1");
     const selected = options.includes(value) ? value : (value ?? options[0] ?? "None");
-    node.addWidget("combo", name, selected, null, { values: options });
-    return;
+    const widget = node.addWidget("combo", name, selected, null, { values: options });
+    refreshModelManagerWidgets(node);
+    return widget;
   }
   node.addWidget("number", name, value ?? 1.0, null, {
     min: -20,
@@ -497,17 +525,87 @@ function addLoraItemRemoveButton(node, set, item) {
   widget.ognLoraItemRemove = { set, item };
 }
 
+function addLoraToExistingSet(node, nodeData, set) {
+  addLoraToSet(node, nodeData, set, nextLoraItem(node, set));
+  orderLoraWidgets(node);
+  resizeNode(node);
+}
+
+function ensureLoraSetAddButton(node, nodeData, set) {
+  if ((node.widgets || []).some((widget) => widget.ognLoraSetAdd === set)) return;
+  const widget = node.addWidget("button", "+ Add LoRA", null, () => {
+    addLoraToExistingSet(node, nodeData, set);
+  });
+  widget.ognLoraSetAdd = set;
+}
+
+function loraItemsForSet(node, set) {
+  const items = new Set();
+  for (const widget of node.widgets || []) {
+    const parsed = parseLoraWidgetName(widget.name);
+    if (parsed?.set === set) items.add(parsed.item);
+  }
+  return [...items].sort((a, b) => a - b);
+}
+
+function orderLoraWidgets(node) {
+  if (!node.widgets) return;
+  const widgetByName = new Map();
+  const removeButtons = new Map();
+  const headers = new Map();
+  const spacers = new Map();
+  const addButtons = new Map();
+  const passthrough = [];
+
+  for (const widget of node.widgets) {
+    const parsed = parseLoraWidgetName(widget.name);
+    if (parsed) {
+      widgetByName.set(widget.name, widget);
+    } else if (widget.ognLoraItemRemove) {
+      removeButtons.set(`${widget.ognLoraItemRemove.set}:${widget.ognLoraItemRemove.item}`, widget);
+    } else if (widget.ognLoraHeaderSet) {
+      headers.set(widget.ognLoraHeaderSet, widget);
+    } else if (widget.ognLoraSetSpacer) {
+      spacers.set(widget.ognLoraSetSpacer, widget);
+    } else if (widget.ognLoraSetAdd) {
+      addButtons.set(widget.ognLoraSetAdd, widget);
+    } else if (widget !== node.ognButtonSpacer && widget !== node.ognAddLoraButton && widget !== node.ognAddSetButton) {
+      passthrough.push(widget);
+    }
+  }
+
+  const ordered = [...passthrough];
+  for (const set of loraSetIndexes(node)) {
+    if (set > 1 && spacers.has(set)) ordered.push(spacers.get(set));
+    if (headers.has(set)) ordered.push(headers.get(set));
+    for (const item of loraItemsForSet(node, set)) {
+      const lora = widgetByName.get(loraWidgetName("lora", set, item));
+      const strength = widgetByName.get(loraWidgetName("strength", set, item));
+      const remove = removeButtons.get(`${set}:${item}`);
+      if (lora) ordered.push(lora);
+      if (strength) ordered.push(strength);
+      if (remove) ordered.push(remove);
+    }
+    if (addButtons.has(set)) ordered.push(addButtons.get(set));
+  }
+
+  if (node.ognButtonSpacer) ordered.push(node.ognButtonSpacer);
+  if (node.ognAddSetButton) ordered.push(node.ognAddSetButton);
+  node.widgets = ordered;
+}
+
 function addLoraToSet(node, nodeData, set, item, values = {}) {
   ensureLoraSetSpacer(node, set);
   ensureLoraSetHeader(node, set);
   addLoraValueWidget(node, nodeData, set, item, "lora", values.lora);
   addLoraValueWidget(node, nodeData, set, item, "strength", values.strength);
   addLoraItemRemoveButton(node, set, item);
+  ensureLoraSetAddButton(node, nodeData, set);
 }
 
 function moveLoraButtonsToEnd(node) {
   if (!node.widgets) return;
-  if ((node.ognAddLoraButton || node.ognAddSetButton) && !node.ognButtonSpacer) {
+  if (node.ognAddSetButton && !node.ognButtonSpacer) {
     node.ognButtonSpacer = {
       type: "custom",
       name: "ogn_button_spacer",
@@ -517,37 +615,37 @@ function moveLoraButtonsToEnd(node) {
       draw: () => {},
     };
   }
-  for (const widget of [node.ognButtonSpacer, node.ognAddLoraButton, node.ognAddSetButton]) {
+  for (const widget of [node.ognButtonSpacer, node.ognAddSetButton]) {
     if (!widget) continue;
     const index = node.widgets.indexOf(widget);
     if (index >= 0) node.widgets.splice(index, 1);
     node.widgets.push(widget);
   }
+  orderLoraWidgets(node);
 }
 
 function ensureLoraButtons(node, nodeData) {
   node.serialize_widgets = true;
   normalizeLoraBaseWidgets(node, nodeData);
   ensureLoraSetHeader(node, 1);
-  if (!node.ognAddLoraButton) {
-    node.ognAddLoraButton = node.addWidget("button", "+ Add LoRA", null, () => {
-      const set = Math.max(...loraSetIndexes(node));
-      addLoraToSet(node, nodeData, set, nextLoraItem(node, set));
-      moveLoraButtonsToEnd(node);
-      resizeNode(node);
-    });
-  }
   if (!node.ognAddSetButton) {
     node.ognAddSetButton = node.addWidget("button", "+ Add Set", null, () => {
       const set = nextLoraSet(node);
       addLoraToSet(node, nodeData, set, 1);
+      ensureLoraSetAddButton(node, nodeData, set);
       moveLoraButtonsToEnd(node);
       resizeNode(node);
     });
   }
+  if (node.ognAddLoraButton) {
+    const index = node.widgets.indexOf(node.ognAddLoraButton);
+    if (index >= 0) node.widgets.splice(index, 1);
+    node.ognAddLoraButton = null;
+  }
   for (const set of loraSetIndexes(node)) {
     ensureLoraSetHeader(node, set);
     if (set > 1) ensureLoraSetSpacer(node, set);
+    ensureLoraSetAddButton(node, nodeData, set);
     const items = new Set();
     for (const widget of node.widgets || []) {
       const parsed = parseLoraWidgetName(widget.name);
