@@ -507,11 +507,18 @@ function removeLoraItem(node, set, item) {
   }
   if (set > 1 && loraItemCount(node, set) === 0) {
     for (const widget of [...(node.widgets || [])]) {
-      if (widget.ognLoraHeaderSet !== set && widget.ognLoraSetSpacer !== set) continue;
+      if (
+        widget.ognLoraHeaderSet !== set &&
+        widget.ognLoraSetSpacer !== set &&
+        widget.ognLoraSetAdd !== set
+      ) {
+        continue;
+      }
       const index = node.widgets.indexOf(widget);
       if (index >= 0) node.widgets.splice(index, 1);
     }
   }
+  orderLoraWidgets(node);
   resizeNode(node);
 }
 
