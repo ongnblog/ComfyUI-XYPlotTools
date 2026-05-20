@@ -266,24 +266,24 @@ class OGN_XYPrimitiveAxis:
     FUNCTION = "build_axis"
     CATEGORY = "OGN/XY Plot"
 
-def build_axis(self, axis_type, value_1, **kwargs):
-    values = [value_1] + _sorted_kwargs(kwargs, "value_")
+    def build_axis(self, axis_type, value_1, **kwargs):
+        values = [value_1] + _sorted_kwargs(kwargs, "value_")
 
-    parsed_values = []
-    for value in values:
-        if value is None or str(value).strip() == "":
-            continue
+        parsed_values = []
+        for value in values:
+            if value is None or str(value).strip() == "":
+                continue
 
-        if axis_type == "Seed":
-            parsed_values.extend(
-                v.strip()
-                for v in str(value).replace(",", "\n").splitlines()
-                if v.strip()
-            )
-        else:
-            parsed_values.append(value)
+            if axis_type == "Seed":
+                parsed_values.extend(
+                    v.strip()
+                    for v in str(value).replace(",", "\n").splitlines()
+                    if v.strip()
+                )
+            else:
+                parsed_values.append(value)
 
-    return ({"type": axis_type, "values": parsed_values},)
+        return ({"type": axis_type, "values": parsed_values},)
 
 
 class OGN_XYPlot:
