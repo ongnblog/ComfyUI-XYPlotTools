@@ -36,6 +36,7 @@ AXIS_TYPES = [
 
 UNET_DTYPES = ["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"]
 SEED_MODES = ["Fixed", "Increment per cell", "Increment per row", "Increment per column"]
+LORA_EXTENSIONS = {".ckpt", ".pt", ".pth", ".safetensors", ".bin"}
 class AnyType(str):
     def __ne__(self, other):
         return False
@@ -62,6 +63,46 @@ def _scheduler_names():
     if hasattr(comfy.samplers, "KSampler") and hasattr(comfy.samplers.KSampler, "SCHEDULERS"):
         return comfy.samplers.KSampler.SCHEDULERS
     return comfy.samplers.SCHEDULER_NAMES
+
+
+def _normalize_model_path(value):
+    return str(value).replace("\\", "/").strip("/")
+
+
+def _model_folder(value):
+    normalized = _normalize_model_path(value)
+    return normalized.rsplit("/", 1)[0] if "/" in normalized else "."
+
+
+def _lora_folders():
+    folders = {_model_folder(value) for value in folder_paths.get_filename_list("loras")}
+    return sorted(folders, key=lambda value: value.lower()) or ["None"]
+
+
+def _lora_files_in_folder(folder):
+    if not folder or str(folder).lower() == "none":
+        return []
+    folder = str(folder).strip().strip('"')
+    if os.path.isdir(folder):
+        loras = []
+        for name in sorted(os.listdir(folder), key=lambda value: value.lower()):
+            path = os.path.join(folder, name)
+            if os.path.isfile(path) and os.path.splitext(name)[1].lower() in LORA_EXTENSIONS:
+                loras.append(path)
+        return loras
+
+    folder = "." if folder == "." else _normalize_model_path(folder)
+    loras = []
+    for value in folder_paths.get_filename_list("loras"):
+        if _model_folder(value) == folder:
+            loras.append(_normalize_model_path(value))
+    return sorted(loras, key=lambda value: value.lower())
+
+
+def _lora_path(lora_name):
+    if os.path.isfile(lora_name):
+        return lora_name
+    return folder_paths.get_full_path_or_raise("loras", lora_name)
 
 
 @dataclass
@@ -209,6 +250,49 @@ class OGN_XYLoraAxis:
                     strength = 1.0
                 loras.append({"lora": lora, "strength_model": strength, "strength_clip": strength})
             values.append({"set": set_index, "loras": loras})
+        return ({"type": "LoRA", "values": values},)
+
+
+class OGN_XYLoraFolderSelectAxis:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "lora_folder": ("STRING", {"default": "", "multiline": False}),
+                "strength_model": (
+                    "FLOAT",
+                    {"default": 1.0, "min": -20.0, "max": 20.0, "step": 0.05},
+                ),
+            },
+        }
+
+    RETURN_TYPES = ("OGN_XY_AXIS",)
+    RETURN_NAMES = ("axis",)
+    FUNCTION = "build_axis"
+    CATEGORY = "OGN/XY Plot"
+
+    def build_axis(self, lora_folder, strength_model):
+        strength = float(strength_model)
+        if not math.isfinite(strength):
+            strength = 1.0
+
+        loras = _lora_files_in_folder(lora_folder)
+        if not loras:
+            raise ValueError(f"No LoRA files found in folder: {lora_folder}")
+
+        values = [
+            {
+                "set": index,
+                "loras": [
+                    {
+                        "lora": lora,
+                        "strength_model": strength,
+                        "strength_clip": strength,
+                    }
+                ],
+            }
+            for index, lora in enumerate(loras, start=1)
+        ]
         return ({"type": "LoRA", "values": values},)
 
 
@@ -498,7 +582,7 @@ class OGN_XYPlot:
                 return model, clip
             if strength_model == 0 and strength_clip == 0:
                 return model, clip
-            lora_path = folder_paths.get_full_path_or_raise("loras", lora_name)
+            lora_path = _lora_path(lora_name)
             lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
             return comfy.sd.load_lora_for_models(model, clip, lora, strength_model, strength_clip)
         if value.strip().lower() in {"none", "no lora", "disabled", "off"}:
@@ -509,7 +593,7 @@ class OGN_XYPlot:
         strength_clip = float(parts[2]) if len(parts) > 2 and parts[2] else strength_model
         if strength_model == 0 and strength_clip == 0:
             return model, clip
-        lora_path = folder_paths.get_full_path_or_raise("loras", lora_name)
+        lora_path = _lora_path(lora_name)
         lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
         return comfy.sd.load_lora_for_models(model, clip, lora, strength_model, strength_clip)
 
@@ -750,6 +834,7 @@ NODE_CLASS_MAPPINGS = {
     "OGN_XYDiffusionModelAxis": OGN_XYDiffusionModelAxis,
     "OGN_XYSamplerAxis": OGN_XYSamplerAxis,
     "OGN_XYLoraAxis": OGN_XYLoraAxis,
+    "OGN_XYLoraFolderSelectAxis": OGN_XYLoraFolderSelectAxis,
     "OGN_XYPromptSRAxis": OGN_XYPromptSRAxis,
     "OGN_XYPrimitiveAxis": OGN_XYPrimitiveAxis,
 }
@@ -760,6 +845,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "OGN_XYDiffusionModelAxis": "OGN_XY Diffusion Model Axis",
     "OGN_XYSamplerAxis": "OGN_XY Sampler Axis",
     "OGN_XYLoraAxis": "OGN_XY LoRA Axis",
+    "OGN_XYLoraFolderSelectAxis": "OGN_XY LoRA FolderSelect Axis",
     "OGN_XYPromptSRAxis": "OGN_XY Prompt S/R Axis",
     "OGN_XYPrimitiveAxis": "OGN_XY Primitive Axis",
 }
