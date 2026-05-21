@@ -207,6 +207,7 @@ class OGN_XYLoraAxis:
                     "FLOAT",
                     {"default": 1.0, "min": -20.0, "max": 20.0, "step": 0.05},
                 ),
+                "group_number_1": ("INT", {"default": 1, "min": 1, "max": 10000}),
             },
             "optional": FlexibleOptionalInputType(),
         }
@@ -216,40 +217,58 @@ class OGN_XYLoraAxis:
     FUNCTION = "build_axis"
     CATEGORY = "OGN/XY Plot"
 
-    def build_axis(self, lora_1, strength_model_1, **kwargs):
-        sets = {1: {1: {"lora": lora_1, "strength_model": strength_model_1}}}
+    def build_axis(self, lora_1, strength_model_1, group_number_1, **kwargs):
+        rows = {1: {"lora": lora_1, "strength_model": strength_model_1, "group_number": group_number_1}}
         for key, value in kwargs.items():
             lora_match = re.fullmatch(r"lora_(\d+)", key)
             strength_match = re.fullmatch(r"strength_model_(\d+)", key)
+            group_match = re.fullmatch(r"group_number_(\d+)", key)
             nested_lora_match = re.fullmatch(r"lora(\d+)_(\d+)", key)
             nested_strength_match = re.fullmatch(r"strength_model_(\d+)_(\d+)", key)
+            nested_group_match = re.fullmatch(r"group_number_(\d+)_(\d+)", key)
             if lora_match:
-                set_index = int(lora_match.group(1))
-                sets.setdefault(set_index, {}).setdefault(1, {})["lora"] = value
+                item_index = int(lora_match.group(1))
+                rows.setdefault(item_index, {})["lora"] = value
             elif strength_match:
-                set_index = int(strength_match.group(1))
-                sets.setdefault(set_index, {}).setdefault(1, {})["strength_model"] = value
+                item_index = int(strength_match.group(1))
+                rows.setdefault(item_index, {})["strength_model"] = value
+            elif group_match:
+                item_index = int(group_match.group(1))
+                rows.setdefault(item_index, {})["group_number"] = value
             elif nested_lora_match:
                 set_index = int(nested_lora_match.group(1))
                 item_index = int(nested_lora_match.group(2))
-                sets.setdefault(set_index, {}).setdefault(item_index, {})["lora"] = value
+                legacy_index = set_index * 10000 + item_index
+                rows.setdefault(legacy_index, {"group_number": set_index})["lora"] = value
             elif nested_strength_match:
                 set_index = int(nested_strength_match.group(1))
                 item_index = int(nested_strength_match.group(2))
-                sets.setdefault(set_index, {}).setdefault(item_index, {})["strength_model"] = value
+                legacy_index = set_index * 10000 + item_index
+                rows.setdefault(legacy_index, {"group_number": set_index})["strength_model"] = value
+            elif nested_group_match:
+                set_index = int(nested_group_match.group(1))
+                item_index = int(nested_group_match.group(2))
+                legacy_index = set_index * 10000 + item_index
+                rows.setdefault(legacy_index, {})["group_number"] = value
+
+        groups = {}
+        order = {}
+        for item_index, row in sorted(rows.items()):
+            lora = row.get("lora")
+            if not lora or str(lora).lower() == "none":
+                continue
+            group_number = int(row.get("group_number", item_index))
+            strength = float(row.get("strength_model", row.get("strength", 1.0)))
+            if not math.isfinite(strength):
+                strength = 1.0
+            groups.setdefault(group_number, []).append(
+                {"lora": lora, "strength_model": strength, "strength_clip": strength}
+            )
+            order.setdefault(group_number, item_index)
 
         values = []
-        for set_index, items in sorted(sets.items()):
-            loras = []
-            for _, row in sorted(items.items()):
-                lora = row.get("lora")
-                if not lora or str(lora).lower() == "none":
-                    continue
-                strength = float(row.get("strength_model", row.get("strength", 1.0)))
-                if not math.isfinite(strength):
-                    strength = 1.0
-                loras.append({"lora": lora, "strength_model": strength, "strength_clip": strength})
-            values.append({"set": set_index, "loras": loras})
+        for group_number in sorted(groups, key=lambda value: (order.get(value, value), value)):
+            values.append({"set": group_number, "loras": groups[group_number]})
         return ({"type": "LoRA", "values": values},)
 
 
@@ -763,7 +782,7 @@ class OGN_XYPlot:
             return
         draw.rectangle((x, y, x + width, y + height), fill=(35, 35, 35))
         max_text_width = max(1, width - padding * 2)
-        lines = self._wrapped_lines(label, font, max_text_width)
+        font, lines = self._fit_label_text(label, font, max_text_width, max(1, height - padding * 2))
         line_h = self._text_size(font, "Ag")[1] + 2
         total_h = line_h * len(lines)
         cursor_y = y + max(padding, (height - total_h) // 2)
@@ -773,9 +792,21 @@ class OGN_XYPlot:
             draw.text((cursor_x, cursor_y), line, fill=(235, 235, 235), font=font)
             cursor_y += line_h
 
-    def _wrapped_lines(self, text, font, max_width):
+    def _fit_label_text(self, label, font, max_width, max_height):
+        label = "" if label is None else str(label)
+        size = getattr(font, "size", 12)
+        min_size = 6
+        for candidate_size in range(size, min_size - 1, -1):
+            candidate_font = self._font(candidate_size)
+            lines, truncated = self._wrapped_lines(label, candidate_font, max_width, max_height=max_height, return_truncated=True)
+            if not truncated and all(self._text_size(candidate_font, line)[0] <= max_width for line in lines):
+                return candidate_font, lines
+        fitted_font = self._font(min_size)
+        return fitted_font, self._ellipsized_lines(label, fitted_font, max_width, max_height)
+
+    def _wrapped_lines(self, text, font, max_width, max_height=320, return_truncated=False):
         if not text:
-            return [""]
+            return ([""], False) if return_truncated else [""]
         chunks = []
         for raw_line in str(text).splitlines():
             if not raw_line:
@@ -783,7 +814,29 @@ class OGN_XYPlot:
                 continue
             estimate = max(8, int(max_width / max(1, self._text_size(font, "M")[0])))
             chunks.extend(textwrap.wrap(raw_line, width=estimate, break_long_words=True) or [""])
-        return chunks[: max(1, math.floor(320 / max(1, self._text_size(font, "Ag")[1])))]
+        line_h = self._text_size(font, "Ag")[1] + 2
+        max_lines = max(1, math.floor(max_height / max(1, line_h)))
+        lines = chunks[:max_lines]
+        truncated = len(chunks) > max_lines
+        return (lines, truncated) if return_truncated else lines
+
+    def _ellipsized_lines(self, text, font, max_width, max_height):
+        lines, truncated = self._wrapped_lines(text, font, max_width, max_height=max_height, return_truncated=True)
+        if not truncated:
+            return lines
+        if not lines:
+            return [""]
+        lines[-1] = self._ellipsize(lines[-1], font, max_width)
+        return lines
+
+    def _ellipsize(self, text, font, max_width):
+        suffix = "..."
+        if self._text_size(font, suffix)[0] > max_width:
+            return ""
+        text = str(text)
+        while text and self._text_size(font, text + suffix)[0] > max_width:
+            text = text[:-1]
+        return text + suffix
 
     def _font(self, size):
         font_candidates = {
