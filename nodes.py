@@ -35,7 +35,10 @@ AXIS_TYPES = [
 ]
 
 UNET_DTYPES = ["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"]
-SEED_MODES = ["Fixed", "Increment per cell", "Increment per row", "Increment per column"]
+SEED_MODES = ["Fixed", "Increment per cell",
+              "Increment per row", "Increment per column"]
+
+
 class AnyType(str):
     def __ne__(self, other):
         return False
@@ -84,7 +87,7 @@ def _sorted_kwargs(kwargs, prefix):
     for key, value in kwargs.items():
         if not key.startswith(prefix):
             continue
-        suffix = key[len(prefix) :]
+        suffix = key[len(prefix):]
         try:
             index = int(suffix)
         except ValueError:
@@ -130,7 +133,8 @@ class OGN_XYDiffusionModelAxis:
     CATEGORY = "OGN/XY Plot"
 
     def build_axis(self, diffusion_model_1, **kwargs):
-        values = [diffusion_model_1] + _sorted_kwargs(kwargs, "diffusion_model_")
+        values = [diffusion_model_1] + \
+            _sorted_kwargs(kwargs, "diffusion_model_")
         values = [value for value in values if value]
         return ({"type": "Diffusion Model", "values": values},)
 
@@ -181,21 +185,26 @@ class OGN_XYLoraAxis:
             lora_match = re.fullmatch(r"lora_(\d+)", key)
             strength_match = re.fullmatch(r"strength_model_(\d+)", key)
             nested_lora_match = re.fullmatch(r"lora(\d+)_(\d+)", key)
-            nested_strength_match = re.fullmatch(r"strength_model_(\d+)_(\d+)", key)
+            nested_strength_match = re.fullmatch(
+                r"strength_model_(\d+)_(\d+)", key)
             if lora_match:
                 set_index = int(lora_match.group(1))
-                sets.setdefault(set_index, {}).setdefault(1, {})["lora"] = value
+                sets.setdefault(set_index, {}).setdefault(
+                    1, {})["lora"] = value
             elif strength_match:
                 set_index = int(strength_match.group(1))
-                sets.setdefault(set_index, {}).setdefault(1, {})["strength_model"] = value
+                sets.setdefault(set_index, {}).setdefault(
+                    1, {})["strength_model"] = value
             elif nested_lora_match:
                 set_index = int(nested_lora_match.group(1))
                 item_index = int(nested_lora_match.group(2))
-                sets.setdefault(set_index, {}).setdefault(item_index, {})["lora"] = value
+                sets.setdefault(set_index, {}).setdefault(
+                    item_index, {})["lora"] = value
             elif nested_strength_match:
                 set_index = int(nested_strength_match.group(1))
                 item_index = int(nested_strength_match.group(2))
-                sets.setdefault(set_index, {}).setdefault(item_index, {})["strength_model"] = value
+                sets.setdefault(set_index, {}).setdefault(
+                    item_index, {})["strength_model"] = value
 
         values = []
         for set_index, items in sorted(sets.items()):
@@ -204,11 +213,160 @@ class OGN_XYLoraAxis:
                 lora = row.get("lora")
                 if not lora or str(lora).lower() == "none":
                     continue
-                strength = float(row.get("strength_model", row.get("strength", 1.0)))
+                strength = float(
+                    row.get("strength_model", row.get("strength", 1.0)))
                 if not math.isfinite(strength):
                     strength = 1.0
-                loras.append({"lora": lora, "strength_model": strength, "strength_clip": strength})
+                loras.append(
+                    {"lora": lora, "strength_model": strength, "strength_clip": strength})
             values.append({"set": set_index, "loras": loras})
+        return ({"type": "LoRA", "values": values},)
+
+
+def _safe_lora_strength(value, default=1.0):
+    try:
+        strength = float(value)
+    except Exception:
+        return default
+    return strength if math.isfinite(strength) else default
+
+
+def _ensure_safetensors(name):
+    text = str(name or "").strip().replace("\\", "/")
+    if not text:
+        return text
+    return text if text.lower().endswith(".safetensors") else f"{text}.safetensors"
+
+
+def _strip_lora_ext(name):
+    text = str(name or "").strip().replace("\\", "/")
+    return text[:-12] if text.lower().endswith(".safetensors") else text
+
+
+def _parse_epoch_lora_path(name):
+    text = str(name or "").strip().replace("\\", "/")
+    stem = _strip_lora_ext(text)
+    if "/" in stem:
+        folder, file_stem = stem.rsplit("/", 1)
+        prefix = f"{folder}/"
+    else:
+        prefix, file_stem = "", ""
+
+    match = re.fullmatch(r"(.+)-0*([1-9]\d*)", file_stem if prefix else stem)
+    if not match:
+        return None, None
+
+    base_stem = match.group(1)
+    end_epoch = int(match.group(2))
+    return f"{prefix}{base_stem}.safetensors", end_epoch
+
+
+def _lora_file_exists(name):
+    return str(name or "").replace("\\", "/") in {
+        lora.replace("\\", "/") for lora in folder_paths.get_filename_list("loras")
+    }
+
+
+class OGN_XYLoraEpochRangeAxis:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "lora_file": (folder_paths.get_filename_list("loras"),),
+                "start_epoch": ("INT", {"default": 1, "min": 1, "max": 999999, "step": 1}),
+                "last_epoch": ("INT", {"default": 1, "min": 1, "max": 999999, "step": 1}),
+                "epoch_interval": ("INT", {"default": 1, "min": 1, "max": 999999, "step": 1}),
+                "strength_model": ("FLOAT", {"default": 1.0, "min": -20.0, "max": 20.0, "step": 0.05}),
+                "include_no_lora": ("BOOLEAN", {"default": False}),
+                "include_base_lora": ("BOOLEAN", {"default": True}),
+                "skip_missing": ("BOOLEAN", {"default": True}),
+                "use_detected_epoch": ("BOOLEAN", {"default": False}),
+                "show_relative_path": ("BOOLEAN", {"default": False}),
+                "base_lora_name": ("STRING", {"default": ""}),
+            }
+        }
+
+    RETURN_TYPES = ("OGN_XY_AXIS",)
+    RETURN_NAMES = ("axis",)
+    FUNCTION = "build_axis"
+    CATEGORY = "OGN/XY Plot"
+
+    def build_axis(
+        self,
+        lora_file,
+        start_epoch,
+        last_epoch,
+        epoch_interval,
+        strength_model,
+        include_no_lora,
+        include_base_lora,
+        skip_missing,
+        use_detected_epoch,
+        show_relative_path,
+        base_lora_name,
+    ):
+        selected_lora = _ensure_safetensors(lora_file)
+
+        if use_detected_epoch:
+            parsed_base, parsed_epoch = _parse_epoch_lora_path(selected_lora)
+            if parsed_base is None:
+                raise ValueError(
+                    "use_detected_epoch is enabled, but lora_file is not an epoch file.")
+            base_lora = _ensure_safetensors(parsed_base)
+            if int(last_epoch) <= 1:
+                last_epoch = parsed_epoch
+        else:
+            base_lora = selected_lora
+
+        base_stem = _strip_lora_ext(base_lora)
+
+        start_epoch = max(1, int(start_epoch))
+        last_epoch = max(start_epoch, int(last_epoch))
+        epoch_interval = max(1, int(epoch_interval))
+        strength = _safe_lora_strength(strength_model)
+
+        values = []
+        set_index = 1
+
+        if include_no_lora:
+            values.append({
+                "set": set_index,
+                "loras": [],
+            })
+            set_index += 1
+
+        for epoch in range(start_epoch, last_epoch + 1, epoch_interval):
+            lora = f"{base_stem}-{epoch:06d}.safetensors"
+            if skip_missing and not _lora_file_exists(lora):
+                continue
+
+            values.append({
+                "set": set_index,
+                "loras": [{
+                    "lora": lora,
+                    "strength_model": strength,
+                    "strength_clip": strength,
+                }],
+            })
+            set_index += 1
+
+        if include_base_lora:
+            if not skip_missing or _lora_file_exists(base_lora):
+                values.append({
+                    "set": set_index,
+                    "loras": [{
+                        "lora": base_lora,
+                        "strength_model": strength,
+                        "strength_clip": strength,
+                    }],
+                })
+
+        if not any(value.get("loras") for value in values):
+            raise ValueError(
+                "No LoRA files matched the epoch range. "
+                "Check lora_file, last_epoch, start_epoch, epoch_interval, or disable skip_missing."
+            )
+
         return ({"type": "LoRA", "values": values},)
 
 
@@ -370,9 +528,12 @@ class OGN_XYPlot:
             row = []
             for x_index, x_value in enumerate(x_values):
                 state = copy.copy(base)
-                state.seed = self._cell_seed(seed, seed_mode, x_index, y_index, len(x_values))
-                self._apply_axis(state, x_type, x_value, x_values, diffusion_weight_dtype)
-                self._apply_axis(state, y_type, y_value, y_values, diffusion_weight_dtype)
+                state.seed = self._cell_seed(
+                    seed, seed_mode, x_index, y_index, len(x_values))
+                self._apply_axis(state, x_type, x_value,
+                                 x_values, diffusion_weight_dtype)
+                self._apply_axis(state, y_type, y_value,
+                                 y_values, diffusion_weight_dtype)
 
                 positive = self._encode_text(state.clip, state.positive_prompt)
                 negative = self._encode_text(state.clip, state.negative_prompt)
@@ -419,17 +580,21 @@ class OGN_XYPlot:
         if axis_type == "Checkpoint":
             state.model, state.clip, state.vae = self._load_checkpoint(value)
         elif axis_type == "Diffusion Model":
-            state.model = self._load_diffusion_model(value, diffusion_weight_dtype)
+            state.model = self._load_diffusion_model(
+                value, diffusion_weight_dtype)
         elif axis_type == "VAE":
             state.vae = self._load_vae(value)
         elif axis_type == "LoRA":
-            state.model, state.clip = self._apply_lora(state.model, state.clip, value)
+            state.model, state.clip = self._apply_lora(
+                state.model, state.clip, value)
         elif axis_type == "CLIP Skip":
             state.clip = self._apply_clip_skip(state.clip, int(value))
         elif axis_type == "Prompt S/R":
             search, replacement = self._prompt_sr_pair(value, axis_values)
-            state.positive_prompt = state.positive_prompt.replace(search, replacement)
-            state.negative_prompt = state.negative_prompt.replace(search, replacement)
+            state.positive_prompt = state.positive_prompt.replace(
+                search, replacement)
+            state.negative_prompt = state.negative_prompt.replace(
+                search, replacement)
         elif axis_type == "Positive Prompt":
             state.positive_prompt = value
         elif axis_type == "Negative Prompt":
@@ -459,7 +624,8 @@ class OGN_XYPlot:
         return axis_values[0], value
 
     def _load_checkpoint(self, ckpt_name):
-        ckpt_path = folder_paths.get_full_path_or_raise("checkpoints", ckpt_name)
+        ckpt_path = folder_paths.get_full_path_or_raise(
+            "checkpoints", ckpt_name)
         out = comfy.sd.load_checkpoint_guess_config(
             ckpt_path,
             output_vae=True,
@@ -478,7 +644,8 @@ class OGN_XYPlot:
         elif weight_dtype == "fp8_e5m2" and hasattr(torch, "float8_e5m2"):
             model_options["dtype"] = torch.float8_e5m2
 
-        unet_path = folder_paths.get_full_path_or_raise("diffusion_models", unet_name)
+        unet_path = folder_paths.get_full_path_or_raise(
+            "diffusion_models", unet_name)
         return comfy.sd.load_diffusion_model(unet_path, model_options=model_options)
 
     def _load_vae(self, vae_name):
@@ -513,8 +680,10 @@ class OGN_XYPlot:
             return model, clip
         parts = [part.strip() for part in value.split(":")]
         lora_name = parts[0]
-        strength_model = float(parts[1]) if len(parts) > 1 and parts[1] else 1.0
-        strength_clip = float(parts[2]) if len(parts) > 2 and parts[2] else strength_model
+        strength_model = float(parts[1]) if len(
+            parts) > 1 and parts[1] else 1.0
+        strength_clip = float(parts[2]) if len(
+            parts) > 2 and parts[2] else strength_model
         if strength_model == 0 and strength_clip == 0:
             return model, clip
         lora_path = folder_paths.get_full_path_or_raise("loras", lora_name)
@@ -592,7 +761,8 @@ class OGN_XYPlot:
     def _clone_latent(self, latent):
         cloned = {}
         for key, value in latent.items():
-            cloned[key] = value.clone() if hasattr(value, "clone") else copy.deepcopy(value)
+            cloned[key] = value.clone() if hasattr(
+                value, "clone") else copy.deepcopy(value)
         return cloned
 
     def _decode(self, vae, samples):
@@ -601,7 +771,8 @@ class OGN_XYPlot:
             latent = latent.unbind()[0]
         images = vae.decode(latent)
         if len(images.shape) == 5:
-            images = images.reshape(-1, images.shape[-3], images.shape[-2], images.shape[-1])
+            images = images.reshape(-1,
+                                    images.shape[-3], images.shape[-2], images.shape[-1])
         return images
 
     def _cell_seed(self, seed, mode, x_index, y_index, x_count):
@@ -647,8 +818,10 @@ class OGN_XYPlot:
         row_count = len(rows)
 
         font = self._font(font_size)
-        left = self._y_label_area(y_labels, font, padding) if include_labels and any(y_labels) else 0
-        top = self._x_label_area(x_labels, font, padding) if include_labels and any(x_labels) else 0
+        left = self._y_label_area(
+            y_labels, font, padding) if include_labels and any(y_labels) else 0
+        top = self._x_label_area(
+            x_labels, font, padding) if include_labels and any(x_labels) else 0
         width = left + cols * cell_w
         height = top + row_count * cell_h
         canvas = Image.new("RGB", (width, height), (24, 24, 24))
@@ -656,13 +829,16 @@ class OGN_XYPlot:
 
         if include_labels:
             for index, label in enumerate(x_labels):
-                self._draw_label(draw, label, (left + index * cell_w, 0, cell_w, top), font, padding)
+                self._draw_label(draw, label, (left + index *
+                                 cell_w, 0, cell_w, top), font, padding)
             for index, label in enumerate(y_labels):
-                self._draw_label(draw, label, (0, top + index * cell_h, left, cell_h), font, padding)
+                self._draw_label(
+                    draw, label, (0, top + index * cell_h, left, cell_h), font, padding)
 
         for y, row in enumerate(rows):
             for x, tensor in enumerate(row):
-                canvas.paste(self._tensor_to_pil(tensor), (left + x * cell_w, top + y * cell_h))
+                canvas.paste(self._tensor_to_pil(tensor),
+                             (left + x * cell_w, top + y * cell_h))
         return self._pil_to_tensor(canvas)
 
     def _y_label_area(self, labels, font, padding):
@@ -678,7 +854,8 @@ class OGN_XYPlot:
         if not labels:
             return 0
         line_h = self._text_size(font, "Ag")[1] + 2
-        max_lines = max(len(self._wrapped_lines(label, font, 260)) for label in labels)
+        max_lines = max(len(self._wrapped_lines(label, font, 260))
+                        for label in labels)
         return min(max_lines * line_h + padding * 2, 180)
 
     def _draw_label(self, draw, label, box, font, padding):
@@ -694,7 +871,8 @@ class OGN_XYPlot:
         for line in lines:
             text_w = self._text_size(font, line)[0]
             cursor_x = x + max(padding, (width - text_w) // 2)
-            draw.text((cursor_x, cursor_y), line, fill=(235, 235, 235), font=font)
+            draw.text((cursor_x, cursor_y), line,
+                      fill=(235, 235, 235), font=font)
             cursor_y += line_h
 
     def _wrapped_lines(self, text, font, max_width):
@@ -705,8 +883,10 @@ class OGN_XYPlot:
             if not raw_line:
                 chunks.append("")
                 continue
-            estimate = max(8, int(max_width / max(1, self._text_size(font, "M")[0])))
-            chunks.extend(textwrap.wrap(raw_line, width=estimate, break_long_words=True) or [""])
+            estimate = max(
+                8, int(max_width / max(1, self._text_size(font, "M")[0])))
+            chunks.extend(textwrap.wrap(raw_line, width=estimate,
+                          break_long_words=True) or [""])
         return chunks[: max(1, math.floor(320 / max(1, self._text_size(font, "Ag")[1])))]
 
     def _font(self, size):
@@ -758,6 +938,7 @@ NODE_CLASS_MAPPINGS = {
     "OGN_XYDiffusionModelAxis": OGN_XYDiffusionModelAxis,
     "OGN_XYSamplerAxis": OGN_XYSamplerAxis,
     "OGN_XYLoraAxis": OGN_XYLoraAxis,
+    "OGN_XYLoraEpochRangeAxis": OGN_XYLoraEpochRangeAxis,
     "OGN_XYPromptSRAxis": OGN_XYPromptSRAxis,
     "OGN_XYPrimitiveAxis": OGN_XYPrimitiveAxis,
 }
@@ -768,6 +949,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "OGN_XYDiffusionModelAxis": "OGN_XY Diffusion Model Axis",
     "OGN_XYSamplerAxis": "OGN_XY Sampler Axis",
     "OGN_XYLoraAxis": "OGN_XY LoRA Axis",
+    "OGN_XYLoraEpochRangeAxis": "OGN_XY LoRA Epoch Range Axis",
     "OGN_XYPromptSRAxis": "OGN_XY Prompt S/R Axis",
     "OGN_XYPrimitiveAxis": "OGN_XY Primitive Axis",
 }

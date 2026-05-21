@@ -2,673 +2,858 @@ import { app } from "../../scripts/app.js";
 import { ComfyWidgets } from "../../scripts/widgets.js";
 
 const NODE_CONFIG = {
-  OGN_XYCheckpointAxis: {
-    label: "Checkpoint",
-    button: "+ Add Checkpoint",
-    rowRemoveButton: "- Remove",
-    rows: [{ kind: "combo", prefix: "checkpoint_", source: "checkpoint_1" }],
-  },
-  OGN_XYDiffusionModelAxis: {
-    label: "Diffusion Model",
-    button: "+ Add Diffusion Model",
-    rowRemoveButton: "- Remove",
-    rows: [{ kind: "combo", prefix: "diffusion_model_", source: "diffusion_model_1" }],
-  },
-  OGN_XYSamplerAxis: {
-    label: "Sampler",
-    button: "+ Add Sampler",
-    rowRemoveButton: "- Remove",
-    rows: [{ kind: "combo", prefix: "sampler_", source: "sampler_1" }],
-  },
-  OGN_XYLoraAxis: {
-    label: "LoRA",
-    loraSets: true,
-  },
-  OGN_XYPromptSRAxis: {
-    label: "Prompt S/R",
-    button: "+ Add Replacement",
-    removeButton: "- Remove Replacement",
-    rows: [{ kind: "string", prefix: "replace_", value: "", multiline: true }],
-  },
+    OGN_XYCheckpointAxis: {
+        label: "Checkpoint",
+        button: "+ Add Checkpoint",
+        rowRemoveButton: "- Remove",
+        rows: [{ kind: "combo", prefix: "checkpoint_", source: "checkpoint_1" }],
+    },
+    OGN_XYDiffusionModelAxis: {
+        label: "Diffusion Model",
+        button: "+ Add Diffusion Model",
+        rowRemoveButton: "- Remove",
+        rows: [{ kind: "combo", prefix: "diffusion_model_", source: "diffusion_model_1" }],
+    },
+    OGN_XYSamplerAxis: {
+        label: "Sampler",
+        button: "+ Add Sampler",
+        rowRemoveButton: "- Remove",
+        rows: [{ kind: "combo", prefix: "sampler_", source: "sampler_1" }],
+    },
+    OGN_XYLoraAxis: {
+        label: "LoRA",
+        loraSets: true,
+    },
+    OGN_XYLoraEpochRangeAxis: {
+        label: "LoRA Epoch Range",
+        loraEpochRange: true,
+    },
+    OGN_XYPromptSRAxis: {
+        label: "Prompt S/R",
+        button: "+ Add Replacement",
+        removeButton: "- Remove Replacement",
+        rows: [{ kind: "string", prefix: "replace_", value: "", multiline: true }],
+    },
 };
 
 function getOptions(nodeData, source) {
-  const required = nodeData?.input?.required || {};
-  const spec = required[source];
-  if (Array.isArray(spec?.[0])) {
-    return spec[0];
-  }
-  return ["None"];
+    const required = nodeData?.input?.required || {};
+    const spec = required[source];
+    if (Array.isArray(spec?.[0])) {
+        return spec[0];
+    }
+    return ["None"];
 }
 
 function nextIndex(node, config) {
-  let index = 1;
-  for (const widget of node.widgets || []) {
-    for (const row of config.rows) {
-      if (widget.name?.startsWith(row.prefix)) {
-        const value = Number(widget.name.slice(row.prefix.length));
-        if (!Number.isNaN(value)) {
-          index = Math.max(index, value);
+    let index = 1;
+    for (const widget of node.widgets || []) {
+        for (const row of config.rows) {
+            if (widget.name?.startsWith(row.prefix)) {
+                const value = Number(widget.name.slice(row.prefix.length));
+                if (!Number.isNaN(value)) {
+                    index = Math.max(index, value);
+                }
+            }
         }
-      }
     }
-  }
-  return index + 1;
+    return index + 1;
 }
 
 function moveButtonToEnd(node) {
-  if (!node.widgets) {
-    return;
-  }
-  if (node.ognAddButton && !node.ognButtonSpacer) {
-    node.ognButtonSpacer = {
-      type: "custom",
-      name: "ogn_button_spacer",
-      value: null,
-      serialize: false,
-      computeSize: () => [0, 10],
-      draw: () => {},
-    };
-  }
-  if (node.ognButtonSpacer) {
-    const spacerIndex = node.widgets.indexOf(node.ognButtonSpacer);
-    if (spacerIndex >= 0) {
-      node.widgets.splice(spacerIndex, 1);
+    if (!node.widgets) {
+        return;
     }
-    node.widgets.push(node.ognButtonSpacer);
-  }
-  for (const button of [node.ognAddButton, node.ognRemoveButton]) {
-    if (!button) continue;
-    const index = node.widgets.indexOf(button);
-    if (index >= 0) {
-      node.widgets.splice(index, 1);
+    if (node.ognAddButton && !node.ognButtonSpacer) {
+        node.ognButtonSpacer = {
+            type: "custom",
+            name: "ogn_button_spacer",
+            value: null,
+            serialize: false,
+            computeSize: () => [0, 10],
+            draw: () => { },
+        };
     }
-    node.widgets.push(button);
-  }
+    if (node.ognButtonSpacer) {
+        const spacerIndex = node.widgets.indexOf(node.ognButtonSpacer);
+        if (spacerIndex >= 0) {
+            node.widgets.splice(spacerIndex, 1);
+        }
+        node.widgets.push(node.ognButtonSpacer);
+    }
+    for (const button of [node.ognAddButton, node.ognRemoveButton]) {
+        if (!button) continue;
+        const index = node.widgets.indexOf(button);
+        if (index >= 0) {
+            node.widgets.splice(index, 1);
+        }
+        node.widgets.push(button);
+    }
 }
 
 function addWidget(node, row, index, nodeData, value) {
-  const name = `${row.prefix}${index}`;
-  if ((node.widgets || []).some((widget) => widget.name === name)) {
-    return;
-  }
-  if (row.kind === "combo") {
-    const options = getOptions(nodeData, row.source);
-    const selected = options.includes(value) ? value : (value ?? options[0] ?? "None");
-    node.addWidget("combo", name, selected, null, { values: options });
-  } else if (row.kind === "float") {
-    node.addWidget("number", name, value ?? row.value ?? 1.0, null, {
-      min: -20,
-      max: 20,
-      step: 0.05,
-      precision: 3,
-    });
-  } else {
-    if (row.multiline === true && ComfyWidgets?.STRING) {
-      const widget = ComfyWidgets.STRING(
-        node,
-        name,
-        ["STRING", { multiline: true, default: value ?? row.value ?? "" }],
-        app
-      ).widget;
-      widget.value = value ?? row.value ?? "";
-      return;
+    const name = `${row.prefix}${index}`;
+    if ((node.widgets || []).some((widget) => widget.name === name)) {
+        return;
     }
-    node.addWidget("text", name, value ?? row.value ?? "", null, {});
-  }
+    if (row.kind === "combo") {
+        const options = getOptions(nodeData, row.source);
+        const selected = options.includes(value) ? value : (value ?? options[0] ?? "None");
+        node.addWidget("combo", name, selected, null, { values: options });
+    } else if (row.kind === "float") {
+        node.addWidget("number", name, value ?? row.value ?? 1.0, null, {
+            min: -20,
+            max: 20,
+            step: 0.05,
+            precision: 3,
+        });
+    } else {
+        if (row.multiline === true && ComfyWidgets?.STRING) {
+            const widget = ComfyWidgets.STRING(
+                node,
+                name,
+                ["STRING", { multiline: true, default: value ?? row.value ?? "" }],
+                app
+            ).widget;
+            widget.value = value ?? row.value ?? "";
+            return;
+        }
+        node.addWidget("text", name, value ?? row.value ?? "", null, {});
+    }
 }
 
 function removeRow(node, config, rowIndex) {
-  for (const widget of [...(node.widgets || [])]) {
-    const isRowWidget = config.rows.some((row) => widget.name === `${row.prefix}${rowIndex}`);
-    const isRemoveButton = widget.ognRowRemoveIndex === rowIndex;
-    const isSpacer = widget.ognRowSpacerIndex === rowIndex;
-    if (!isRowWidget && !isRemoveButton && !isSpacer) {
-      continue;
+    for (const widget of [...(node.widgets || [])]) {
+        const isRowWidget = config.rows.some((row) => widget.name === `${row.prefix}${rowIndex}`);
+        const isRemoveButton = widget.ognRowRemoveIndex === rowIndex;
+        const isSpacer = widget.ognRowSpacerIndex === rowIndex;
+        if (!isRowWidget && !isRemoveButton && !isSpacer) {
+            continue;
+        }
+        const widgetIndex = node.widgets.indexOf(widget);
+        if (widgetIndex >= 0) {
+            widget.onRemove?.();
+            node.widgets.splice(widgetIndex, 1);
+        }
     }
-    const widgetIndex = node.widgets.indexOf(widget);
-    if (widgetIndex >= 0) {
-      widget.onRemove?.();
-      node.widgets.splice(widgetIndex, 1);
-    }
-  }
-  resizeNode(node);
+    resizeNode(node);
 }
 
 function addRowRemoveButton(node, config, index) {
-  if (!config.rowRemoveButton || index <= 1) {
-    return;
-  }
-  if ((node.widgets || []).some((widget) => widget.ognRowRemoveIndex === index)) {
-    return;
-  }
-  const widget = node.addWidget("button", config.rowRemoveButton, null, () => {
-    removeRow(node, config, index);
-  });
-  widget.ognRowRemoveIndex = index;
+    if (!config.rowRemoveButton || index <= 1) {
+        return;
+    }
+    if ((node.widgets || []).some((widget) => widget.ognRowRemoveIndex === index)) {
+        return;
+    }
+    const widget = node.addWidget("button", config.rowRemoveButton, null, () => {
+        removeRow(node, config, index);
+    });
+    widget.ognRowRemoveIndex = index;
 }
 
 function addRowSpacer(node, config, index) {
-  if (!config.rowRemoveButton || index <= 1) {
-    return;
-  }
-  if ((node.widgets || []).some((widget) => widget.ognRowSpacerIndex === index)) {
-    return;
-  }
-  const widget = {
-    type: "custom",
-    name: `ogn_spacer_${config.label}_${index}`,
-    value: null,
-    serialize: false,
-    ognRowSpacerIndex: index,
-    computeSize: () => [0, 10],
-    draw: () => {},
-  };
-  node.widgets.push(widget);
+    if (!config.rowRemoveButton || index <= 1) {
+        return;
+    }
+    if ((node.widgets || []).some((widget) => widget.ognRowSpacerIndex === index)) {
+        return;
+    }
+    const widget = {
+        type: "custom",
+        name: `ogn_spacer_${config.label}_${index}`,
+        value: null,
+        serialize: false,
+        ognRowSpacerIndex: index,
+        computeSize: () => [0, 10],
+        draw: () => { },
+    };
+    node.widgets.push(widget);
 }
 
 function addRow(node, config, nodeData, values = null) {
-  const index = nextIndex(node, config);
-  addRowSpacer(node, config, index);
-  config.rows.forEach((row, rowIndex) => {
-    addWidget(node, row, index, nodeData, values?.[rowIndex]);
-    if (rowIndex === 0) {
-      addRowRemoveButton(node, config, index);
-    }
-  });
-  moveButtonToEnd(node);
-  resizeNode(node);
+    const index = nextIndex(node, config);
+    addRowSpacer(node, config, index);
+    config.rows.forEach((row, rowIndex) => {
+        addWidget(node, row, index, nodeData, values?.[rowIndex]);
+        if (rowIndex === 0) {
+            addRowRemoveButton(node, config, index);
+        }
+    });
+    moveButtonToEnd(node);
+    resizeNode(node);
 }
 
 function removeLastRow(node, config) {
-  const widgets = dynamicWidgets(node, config);
-  if (!widgets.length) {
-    return;
-  }
-  let lastIndex = 1;
-  for (const widget of widgets) {
-    for (const row of config.rows) {
-      if (!widget.name?.startsWith(row.prefix)) continue;
-      const index = Number(widget.name.slice(row.prefix.length));
-      if (Number.isFinite(index)) {
-        lastIndex = Math.max(lastIndex, index);
-      }
+    const widgets = dynamicWidgets(node, config);
+    if (!widgets.length) {
+        return;
     }
-  }
-  for (const widget of [...widgets]) {
-    for (const row of config.rows) {
-      if (!widget.name?.startsWith(row.prefix)) continue;
-      const index = Number(widget.name.slice(row.prefix.length));
-      if (index === lastIndex) {
-        const widgetIndex = node.widgets.indexOf(widget);
-        if (widgetIndex >= 0) {
-          widget.onRemove?.();
-          node.widgets.splice(widgetIndex, 1);
+    let lastIndex = 1;
+    for (const widget of widgets) {
+        for (const row of config.rows) {
+            if (!widget.name?.startsWith(row.prefix)) continue;
+            const index = Number(widget.name.slice(row.prefix.length));
+            if (Number.isFinite(index)) {
+                lastIndex = Math.max(lastIndex, index);
+            }
         }
-      }
     }
-  }
-  resizeNode(node);
+    for (const widget of [...widgets]) {
+        for (const row of config.rows) {
+            if (!widget.name?.startsWith(row.prefix)) continue;
+            const index = Number(widget.name.slice(row.prefix.length));
+            if (index === lastIndex) {
+                const widgetIndex = node.widgets.indexOf(widget);
+                if (widgetIndex >= 0) {
+                    widget.onRemove?.();
+                    node.widgets.splice(widgetIndex, 1);
+                }
+            }
+        }
+    }
+    resizeNode(node);
 }
 
 function resizeNode(node) {
-  if (!node.computeSize) {
-    return;
-  }
-  const size = node.computeSize();
-  node.size[0] = Math.max(node.size[0], size[0]);
-  node.size[1] = Math.max(node.size[1], size[1]);
-  node.setDirtyCanvas(true, true);
+    if (!node.computeSize) {
+        return;
+    }
+    const size = node.computeSize();
+    node.size[0] = Math.max(node.size[0], size[0]);
+    node.size[1] = Math.max(node.size[1], size[1]);
+    node.setDirtyCanvas(true, true);
 }
 
 function dynamicWidgets(node, config) {
-  const prefixes = config.rows.map((row) => row.prefix);
-  return (node.widgets || []).filter((widget) => {
-    if (widget === node.ognAddButton) {
-      return false;
-    }
-    if (widget === node.ognRemoveButton) {
-      return false;
-    }
-    if (widget.ognRowRemoveIndex) {
-      return false;
-    }
-    if (widget.ognRowSpacerIndex) {
-      return false;
-    }
-    const prefix = prefixes.find((candidate) => widget.name?.startsWith(candidate));
-    if (!prefix) {
-      return false;
-    }
-    const index = Number(widget.name.slice(prefix.length));
-    return Number.isFinite(index) && index > 1;
-  });
+    const prefixes = config.rows.map((row) => row.prefix);
+    return (node.widgets || []).filter((widget) => {
+        if (widget === node.ognAddButton) {
+            return false;
+        }
+        if (widget === node.ognRemoveButton) {
+            return false;
+        }
+        if (widget.ognRowRemoveIndex) {
+            return false;
+        }
+        if (widget.ognRowSpacerIndex) {
+            return false;
+        }
+        const prefix = prefixes.find((candidate) => widget.name?.startsWith(candidate));
+        if (!prefix) {
+            return false;
+        }
+        const index = Number(widget.name.slice(prefix.length));
+        return Number.isFinite(index) && index > 1;
+    });
 }
 
 function saveDynamicWidgets(node, config) {
-  return dynamicWidgets(node, config).map((widget) => ({
-    name: widget.name,
-    value: widget.value,
-  }));
+    return dynamicWidgets(node, config).map((widget) => ({
+        name: widget.name,
+        value: widget.value,
+    }));
 }
 
 function restoreDynamicWidgets(node, config, nodeData, saved) {
-  if (!Array.isArray(saved) || !saved.length) {
-    return;
-  }
-  const rowsByIndex = new Map();
-  for (const item of saved) {
-    const row = config.rows.find((candidate) => item.name?.startsWith(candidate.prefix));
-    if (!row) {
-      continue;
+    if (!Array.isArray(saved) || !saved.length) {
+        return;
     }
-    const index = Number(item.name.slice(row.prefix.length));
-    if (!Number.isFinite(index) || index <= 1) {
-      continue;
+    const rowsByIndex = new Map();
+    for (const item of saved) {
+        const row = config.rows.find((candidate) => item.name?.startsWith(candidate.prefix));
+        if (!row) {
+            continue;
+        }
+        const index = Number(item.name.slice(row.prefix.length));
+        if (!Number.isFinite(index) || index <= 1) {
+            continue;
+        }
+        const values = rowsByIndex.get(index) ?? [];
+        values[config.rows.indexOf(row)] = item.value;
+        rowsByIndex.set(index, values);
     }
-    const values = rowsByIndex.get(index) ?? [];
-    values[config.rows.indexOf(row)] = item.value;
-    rowsByIndex.set(index, values);
-  }
-  for (const [index, values] of [...rowsByIndex.entries()].sort((a, b) => a[0] - b[0])) {
-    addRowSpacer(node, config, index);
-    config.rows.forEach((row, rowIndex) => {
-      addWidget(node, row, index, nodeData, values?.[rowIndex]);
-      if (rowIndex === 0) {
-        addRowRemoveButton(node, config, index);
-      }
-    });
-  }
-  moveButtonToEnd(node);
-  resizeNode(node);
+    for (const [index, values] of [...rowsByIndex.entries()].sort((a, b) => a[0] - b[0])) {
+        addRowSpacer(node, config, index);
+        config.rows.forEach((row, rowIndex) => {
+            addWidget(node, row, index, nodeData, values?.[rowIndex]);
+            if (rowIndex === 0) {
+                addRowRemoveButton(node, config, index);
+            }
+        });
+    }
+    moveButtonToEnd(node);
+    resizeNode(node);
 }
 
 function parseLoraWidgetName(name) {
-  let match = /^lora_(\d+)$/.exec(name ?? "");
-  if (match) return { kind: "lora", set: Number(match[1]), item: 1 };
-  match = /^strength_model_(\d+)$/.exec(name ?? "");
-  if (match) return { kind: "strength", set: Number(match[1]), item: 1 };
-  match = /^lora(\d+)_(\d+)$/.exec(name ?? "");
-  if (match) return { kind: "lora", set: Number(match[1]), item: Number(match[2]) };
-  match = /^strength_model_(\d+)_(\d+)$/.exec(name ?? "");
-  if (match) return { kind: "strength", set: Number(match[1]), item: Number(match[2]) };
-  return null;
+    let match = /^lora_(\d+)$/.exec(name ?? "");
+    if (match) return { kind: "lora", set: Number(match[1]), item: 1 };
+    match = /^strength_model_(\d+)$/.exec(name ?? "");
+    if (match) return { kind: "strength", set: Number(match[1]), item: 1 };
+    match = /^lora(\d+)_(\d+)$/.exec(name ?? "");
+    if (match) return { kind: "lora", set: Number(match[1]), item: Number(match[2]) };
+    match = /^strength_model_(\d+)_(\d+)$/.exec(name ?? "");
+    if (match) return { kind: "strength", set: Number(match[1]), item: Number(match[2]) };
+    return null;
 }
 
 function loraWidgetName(kind, set, item) {
-  if (item === 1) {
-    return kind === "lora" ? `lora_${set}` : `strength_model_${set}`;
-  }
-  return kind === "lora" ? `lora${set}_${item}` : `strength_model_${set}_${item}`;
+    if (item === 1) {
+        return kind === "lora" ? `lora_${set}` : `strength_model_${set}`;
+    }
+    return kind === "lora" ? `lora${set}_${item}` : `strength_model_${set}_${item}`;
 }
 
 function loraSetIndexes(node) {
-  const indexes = new Set([1]);
-  for (const widget of node.widgets || []) {
-    const parsed = parseLoraWidgetName(widget.name);
-    if (parsed) indexes.add(parsed.set);
-  }
-  return [...indexes].sort((a, b) => a - b);
+    const indexes = new Set([1]);
+    for (const widget of node.widgets || []) {
+        const parsed = parseLoraWidgetName(widget.name);
+        if (parsed) indexes.add(parsed.set);
+    }
+    return [...indexes].sort((a, b) => a - b);
 }
 
 function nextLoraSet(node) {
-  return Math.max(...loraSetIndexes(node)) + 1;
+    return Math.max(...loraSetIndexes(node)) + 1;
 }
 
 function nextLoraItem(node, set) {
-  let item = 1;
-  for (const widget of node.widgets || []) {
-    const parsed = parseLoraWidgetName(widget.name);
-    if (parsed?.set === set) item = Math.max(item, parsed.item);
-  }
-  return item + 1;
+    let item = 1;
+    for (const widget of node.widgets || []) {
+        const parsed = parseLoraWidgetName(widget.name);
+        if (parsed?.set === set) item = Math.max(item, parsed.item);
+    }
+    return item + 1;
 }
 
 function addCustomWidgetBeforeLoraButtons(node, widget) {
-  const buttonIndexes = [node.ognAddLoraButton, node.ognAddSetButton, node.ognButtonSpacer]
-    .map((button) => node.widgets?.indexOf(button) ?? -1)
-    .filter((index) => index >= 0);
-  const index = buttonIndexes.length ? Math.min(...buttonIndexes) : (node.widgets?.length ?? 0);
-  node.widgets.splice(index, 0, widget);
+    const buttonIndexes = [node.ognAddLoraButton, node.ognAddSetButton, node.ognButtonSpacer]
+        .map((button) => node.widgets?.indexOf(button) ?? -1)
+        .filter((index) => index >= 0);
+    const index = buttonIndexes.length ? Math.min(...buttonIndexes) : (node.widgets?.length ?? 0);
+    node.widgets.splice(index, 0, widget);
 }
 
 function moveWidgetBeforeLoraButtons(node, widget) {
-  if (!node.widgets || !widget) return;
-
-  const currentIndex = node.widgets.indexOf(widget);
-  if (currentIndex >= 0) {
-    node.widgets.splice(currentIndex, 1);
-  }
-
-  addCustomWidgetBeforeLoraButtons(node, widget);
+    if (!node.widgets || !widget) return;
+    const currentIndex = node.widgets.indexOf(widget);
+    if (currentIndex >= 0) {
+        node.widgets.splice(currentIndex, 1);
+    }
+    addCustomWidgetBeforeLoraButtons(node, widget);
 }
 
 function ensureLoraSetHeader(node, set) {
-  if ((node.widgets || []).some((widget) => widget.ognLoraHeaderSet === set)) return;
-  const widget = {
-    type: "custom",
-    name: `ogn_lora_set_${set}`,
-    value: null,
-    serialize: false,
-    ognLoraHeaderSet: set,
-    computeSize: () => [0, 22],
-    draw: (ctx, _node, _width, y) => {
-      ctx.save();
-      ctx.fillStyle = "#ddd";
-      ctx.font = "12px sans-serif";
-      ctx.fillText(`[Set ${set}]`, 10, y + 15);
-      ctx.restore();
-    },
-  };
-  if (set === 1) {
-    const firstWidgetIndex = node.widgets.findIndex((candidate) => candidate.name === "lora_1");
-    node.widgets.splice(Math.max(firstWidgetIndex, 0), 0, widget);
-  } else {
-    addCustomWidgetBeforeLoraButtons(node, widget);
-  }
+    if ((node.widgets || []).some((widget) => widget.ognLoraHeaderSet === set)) return;
+    const widget = {
+        type: "custom",
+        name: `ogn_lora_set_${set}`,
+        value: null,
+        serialize: false,
+        ognLoraHeaderSet: set,
+        computeSize: () => [0, 22],
+        draw: (ctx, _node, _width, y) => {
+            ctx.save();
+            ctx.fillStyle = "#ddd";
+            ctx.font = "12px sans-serif";
+            ctx.fillText(`[Set ${set}]`, 10, y + 15);
+            ctx.restore();
+        },
+    };
+    if (set === 1) {
+        const firstWidgetIndex = node.widgets.findIndex((candidate) => candidate.name === "lora_1");
+        node.widgets.splice(Math.max(firstWidgetIndex, 0), 0, widget);
+    } else {
+        addCustomWidgetBeforeLoraButtons(node, widget);
+    }
 }
 
 function ensureLoraSetSpacer(node, set) {
-  if (set <= 1 || (node.widgets || []).some((widget) => widget.ognLoraSetSpacer === set)) return;
-  addCustomWidgetBeforeLoraButtons(node, {
-    type: "custom",
-    name: `ogn_lora_set_spacer_${set}`,
-    value: null,
-    serialize: false,
-    ognLoraSetSpacer: set,
-    computeSize: () => [0, 10],
-    draw: () => {},
-  });
+    if (set <= 1 || (node.widgets || []).some((widget) => widget.ognLoraSetSpacer === set)) return;
+    addCustomWidgetBeforeLoraButtons(node, {
+        type: "custom",
+        name: `ogn_lora_set_spacer_${set}`,
+        value: null,
+        serialize: false,
+        ognLoraSetSpacer: set,
+        computeSize: () => [0, 10],
+        draw: () => { },
+    });
 }
 
 function addLoraValueWidget(node, nodeData, set, item, kind, value = null) {
-  const name = loraWidgetName(kind, set, item);
-  if ((node.widgets || []).some((widget) => widget.name === name)) return;
+    const name = loraWidgetName(kind, set, item);
+    if ((node.widgets || []).some((widget) => widget.name === name)) return;
 
-  let widget;
+    let widget;
+    if (kind === "lora") {
+        const options = getOptions(nodeData, "lora_1");
+        const selected = options.includes(value) ? value : (value ?? options[0] ?? "None");
+        widget = node.addWidget("combo", name, selected, null, { values: options });
+    } else {
+        widget = node.addWidget("number", name, value ?? 1.0, null, {
+            min: -20,
+            max: 20,
+            step: 0.05,
+            precision: 3,
+        });
+    }
 
-  if (kind === "lora") {
-    const options = getOptions(nodeData, "lora_1");
-    const selected = options.includes(value) ? value : (value ?? options[0] ?? "None");
-    widget = node.addWidget("combo", name, selected, null, { values: options });
-  } else {
-    widget = node.addWidget("number", name, value ?? 1.0, null, {
-      min: -20,
-      max: 20,
-      step: 0.05,
-      precision: 3,
-    });
-  }
-
-  moveWidgetBeforeLoraButtons(node, widget);
+    moveWidgetBeforeLoraButtons(node, widget);
 }
 
 function normalizeLoraBaseWidgets(node, nodeData) {
-  const options = nodeData ? getOptions(nodeData, "lora_1") : ["None"];
-  const fallbackLora = options.includes("None") ? "None" : (options[0] ?? "None");
-  for (const widget of node.widgets || []) {
-    if (widget.name === "lora_1") {
-      if (widget.value == null || !options.includes(widget.value)) {
-        widget.value = fallbackLora;
-      }
-    } else if (widget.name === "strength_model_1") {
-      const value = Number(widget.value);
-      if (!Number.isFinite(value)) {
-        widget.value = 1.0;
-      }
+    const options = nodeData ? getOptions(nodeData, "lora_1") : ["None"];
+    const fallbackLora = options.includes("None") ? "None" : (options[0] ?? "None");
+    for (const widget of node.widgets || []) {
+        if (widget.name === "lora_1") {
+            if (widget.value == null || !options.includes(widget.value)) {
+                widget.value = fallbackLora;
+            }
+        } else if (widget.name === "strength_model_1") {
+            const value = Number(widget.value);
+            if (!Number.isFinite(value)) {
+                widget.value = 1.0;
+            }
+        }
     }
-  }
 }
 
 function getLoraBaseValues(node) {
-  const loraWidget = (node.widgets || []).find((widget) => widget.name === "lora_1");
-  const strengthWidget = (node.widgets || []).find((widget) => widget.name === "strength_model_1");
-  return {
-    lora_1: loraWidget?.value,
-    strength_model_1: strengthWidget?.value,
-  };
+    const loraWidget = (node.widgets || []).find((widget) => widget.name === "lora_1");
+    const strengthWidget = (node.widgets || []).find((widget) => widget.name === "strength_model_1");
+    return {
+        lora_1: loraWidget?.value,
+        strength_model_1: strengthWidget?.value,
+    };
 }
 
 function restoreLoraBaseValues(node, nodeData, saved) {
-  if (!saved || typeof saved !== "object") {
-    normalizeLoraBaseWidgets(node, nodeData);
-    return;
-  }
-  const options = getOptions(nodeData, "lora_1");
-  for (const widget of node.widgets || []) {
-    if (widget.name === "lora_1") {
-      if (saved.lora_1 != null && options.includes(saved.lora_1)) {
-        widget.value = saved.lora_1;
-      }
-    } else if (widget.name === "strength_model_1") {
-      const value = Number(saved.strength_model_1);
-      if (Number.isFinite(value)) {
-        widget.value = value;
-      }
+    if (!saved || typeof saved !== "object") {
+        normalizeLoraBaseWidgets(node, nodeData);
+        return;
     }
-  }
-  normalizeLoraBaseWidgets(node, nodeData);
+    const options = getOptions(nodeData, "lora_1");
+    for (const widget of node.widgets || []) {
+        if (widget.name === "lora_1") {
+            if (saved.lora_1 != null && options.includes(saved.lora_1)) {
+                widget.value = saved.lora_1;
+            }
+        } else if (widget.name === "strength_model_1") {
+            const value = Number(saved.strength_model_1);
+            if (Number.isFinite(value)) {
+                widget.value = value;
+            }
+        }
+    }
+    normalizeLoraBaseWidgets(node, nodeData);
 }
 
 function inferLoraBaseValuesFromWidgets(info, nodeData) {
-  if (!Array.isArray(info?.widgets_values)) {
-    return null;
-  }
-  const options = getOptions(nodeData, "lora_1");
-  const lora = info.widgets_values.find((value) => typeof value === "string" && options.includes(value));
-  const strength = info.widgets_values.find((value) => Number.isFinite(Number(value)));
-  if (lora == null && strength == null) {
-    return null;
-  }
-  return {
-    lora_1: lora,
-    strength_model_1: strength,
-  };
+    if (!Array.isArray(info?.widgets_values)) {
+        return null;
+    }
+    const options = getOptions(nodeData, "lora_1");
+    const lora = info.widgets_values.find((value) => typeof value === "string" && options.includes(value));
+    const strength = info.widgets_values.find((value) => Number.isFinite(Number(value)));
+    if (lora == null && strength == null) {
+        return null;
+    }
+    return {
+        lora_1: lora,
+        strength_model_1: strength,
+    };
 }
 
 function loraItemCount(node, set) {
-  const items = new Set();
-  for (const widget of node.widgets || []) {
-    const parsed = parseLoraWidgetName(widget.name);
-    if (parsed?.set === set) items.add(parsed.item);
-  }
-  return items.size;
+    const items = new Set();
+    for (const widget of node.widgets || []) {
+        const parsed = parseLoraWidgetName(widget.name);
+        if (parsed?.set === set) items.add(parsed.item);
+    }
+    return items.size;
 }
 
 function removeLoraItem(node, set, item) {
-  if (set === 1 && item === 1) {
-    for (const widget of node.widgets || []) {
-      if (widget.name === "lora_1") widget.value = "None";
-      if (widget.name === "strength_model_1") widget.value = 0;
+    if (set === 1 && item === 1) {
+        for (const widget of node.widgets || []) {
+            if (widget.name === "lora_1") widget.value = "None";
+            if (widget.name === "strength_model_1") widget.value = 0;
+        }
+        resizeNode(node);
+        return;
+    }
+    for (const widget of [...(node.widgets || [])]) {
+        const parsed = parseLoraWidgetName(widget.name);
+        const shouldRemove =
+            (parsed?.set === set && parsed.item === item) ||
+            (widget.ognLoraItemRemove?.set === set && widget.ognLoraItemRemove?.item === item);
+        if (!shouldRemove) continue;
+        const index = node.widgets.indexOf(widget);
+        if (index >= 0) node.widgets.splice(index, 1);
+    }
+    if (set > 1 && loraItemCount(node, set) === 0) {
+        for (const widget of [...(node.widgets || [])]) {
+            if (widget.ognLoraHeaderSet !== set && widget.ognLoraSetSpacer !== set) continue;
+            const index = node.widgets.indexOf(widget);
+            if (index >= 0) node.widgets.splice(index, 1);
+        }
     }
     resizeNode(node);
-    return;
-  }
-  for (const widget of [...(node.widgets || [])]) {
-    const parsed = parseLoraWidgetName(widget.name);
-    const shouldRemove =
-      (parsed?.set === set && parsed.item === item) ||
-      (widget.ognLoraItemRemove?.set === set && widget.ognLoraItemRemove?.item === item);
-    if (!shouldRemove) continue;
-    const index = node.widgets.indexOf(widget);
-    if (index >= 0) node.widgets.splice(index, 1);
-  }
-  if (set > 1 && loraItemCount(node, set) === 0) {
-    for (const widget of [...(node.widgets || [])]) {
-      if (widget.ognLoraHeaderSet !== set && widget.ognLoraSetSpacer !== set) continue;
-      const index = node.widgets.indexOf(widget);
-      if (index >= 0) node.widgets.splice(index, 1);
-    }
-  }
-  resizeNode(node);
 }
 
 function addLoraItemRemoveButton(node, set, item) {
-  for (const widget of [...(node.widgets || [])]) {
-    if (widget.ognLoraItemRemove?.set !== set || widget.ognLoraItemRemove?.item !== item) continue;
-    const index = node.widgets.indexOf(widget);
-    if (index >= 0) node.widgets.splice(index, 1);
-  }
+    for (const widget of [...(node.widgets || [])]) {
+        if (widget.ognLoraItemRemove?.set !== set || widget.ognLoraItemRemove?.item !== item) continue;
+        const index = node.widgets.indexOf(widget);
+        if (index >= 0) node.widgets.splice(index, 1);
+    }
 
-  const widget = node.addWidget("button", "- Remove", null, () => removeLoraItem(node, set, item));
-  widget.ognLoraItemRemove = { set, item };
+    const widget = node.addWidget("button", "- Remove", null, () => removeLoraItem(node, set, item));
+    widget.ognLoraItemRemove = { set, item };
 
-  moveWidgetBeforeLoraButtons(node, widget);
+    moveWidgetBeforeLoraButtons(node, widget);
 }
 
 function addLoraToSet(node, nodeData, set, item, values = {}) {
-  ensureLoraSetSpacer(node, set);
-  ensureLoraSetHeader(node, set);
-  addLoraValueWidget(node, nodeData, set, item, "lora", values.lora);
-  addLoraValueWidget(node, nodeData, set, item, "strength", values.strength);
-  addLoraItemRemoveButton(node, set, item);
+    ensureLoraSetSpacer(node, set);
+    ensureLoraSetHeader(node, set);
+    addLoraValueWidget(node, nodeData, set, item, "lora", values.lora);
+    addLoraValueWidget(node, nodeData, set, item, "strength", values.strength);
+    addLoraItemRemoveButton(node, set, item);
 }
 
 function moveLoraButtonsToEnd(node) {
-  if (!node.widgets) return;
-  if ((node.ognAddLoraButton || node.ognAddSetButton) && !node.ognButtonSpacer) {
-    node.ognButtonSpacer = {
-      type: "custom",
-      name: "ogn_button_spacer",
-      value: null,
-      serialize: false,
-      computeSize: () => [0, 10],
-      draw: () => {},
-    };
-  }
-  for (const widget of [node.ognButtonSpacer, node.ognAddLoraButton, node.ognAddSetButton]) {
-    if (!widget) continue;
-    const index = node.widgets.indexOf(widget);
-    if (index >= 0) node.widgets.splice(index, 1);
-    node.widgets.push(widget);
-  }
+    if (!node.widgets) return;
+    if ((node.ognAddLoraButton || node.ognAddSetButton) && !node.ognButtonSpacer) {
+        node.ognButtonSpacer = {
+            type: "custom",
+            name: "ogn_button_spacer",
+            value: null,
+            serialize: false,
+            computeSize: () => [0, 10],
+            draw: () => { },
+        };
+    }
+    for (const widget of [node.ognButtonSpacer, node.ognAddLoraButton, node.ognAddSetButton]) {
+        if (!widget) continue;
+        const index = node.widgets.indexOf(widget);
+        if (index >= 0) node.widgets.splice(index, 1);
+        node.widgets.push(widget);
+    }
 }
 
 function ensureLoraButtons(node, nodeData) {
-  node.serialize_widgets = true;
-  normalizeLoraBaseWidgets(node, nodeData);
-  ensureLoraSetHeader(node, 1);
-  if (!node.ognAddLoraButton) {
-    node.ognAddLoraButton = node.addWidget("button", "+ Add LoRA", null, () => {
-      const set = Math.max(...loraSetIndexes(node));
-      addLoraToSet(node, nodeData, set, nextLoraItem(node, set));
-      moveLoraButtonsToEnd(node);
-      resizeNode(node);
-    });
-  }
-  if (!node.ognAddSetButton) {
-    node.ognAddSetButton = node.addWidget("button", "+ Add Set", null, () => {
-      const set = nextLoraSet(node);
-      addLoraToSet(node, nodeData, set, 1);
-      moveLoraButtonsToEnd(node);
-      resizeNode(node);
-    });
-  }
-  for (const set of loraSetIndexes(node)) {
-    ensureLoraSetHeader(node, set);
-    if (set > 1) ensureLoraSetSpacer(node, set);
-    const items = new Set();
-    for (const widget of node.widgets || []) {
-      const parsed = parseLoraWidgetName(widget.name);
-      if (parsed?.set === set) items.add(parsed.item);
+    node.serialize_widgets = true;
+    normalizeLoraBaseWidgets(node, nodeData);
+    ensureLoraSetHeader(node, 1);
+    if (!node.ognAddLoraButton) {
+        node.ognAddLoraButton = node.addWidget("button", "+ Add LoRA", null, () => {
+            const set = Math.max(...loraSetIndexes(node));
+            addLoraToSet(node, nodeData, set, nextLoraItem(node, set));
+            moveLoraButtonsToEnd(node);
+            resizeNode(node);
+        });
     }
-    for (const item of [...items].sort((a, b) => a - b)) {
-      addLoraItemRemoveButton(node, set, item);
+    if (!node.ognAddSetButton) {
+        node.ognAddSetButton = node.addWidget("button", "+ Add Set", null, () => {
+            const set = nextLoraSet(node);
+            addLoraToSet(node, nodeData, set, 1);
+            moveLoraButtonsToEnd(node);
+            resizeNode(node);
+        });
     }
-  }
-  normalizeLoraBaseWidgets(node, nodeData);
-  moveLoraButtonsToEnd(node);
+    for (const set of loraSetIndexes(node)) {
+        ensureLoraSetHeader(node, set);
+        if (set > 1) ensureLoraSetSpacer(node, set);
+        const items = new Set();
+        for (const widget of node.widgets || []) {
+            const parsed = parseLoraWidgetName(widget.name);
+            if (parsed?.set === set) items.add(parsed.item);
+        }
+        for (const item of [...items].sort((a, b) => a - b)) {
+            addLoraItemRemoveButton(node, set, item);
+        }
+    }
+    normalizeLoraBaseWidgets(node, nodeData);
+    moveLoraButtonsToEnd(node);
 }
 
 function saveLoraDynamicWidgets(node, nodeData) {
-  normalizeLoraBaseWidgets(node, nodeData);
-  return (node.widgets || [])
-    .filter((widget) => {
-      const parsed = parseLoraWidgetName(widget.name);
-      return parsed && !(parsed.set === 1 && parsed.item === 1);
-    })
-    .map((widget) => ({ name: widget.name, value: widget.value }));
+    normalizeLoraBaseWidgets(node, nodeData);
+    return (node.widgets || [])
+        .filter((widget) => {
+            const parsed = parseLoraWidgetName(widget.name);
+            return parsed && !(parsed.set === 1 && parsed.item === 1);
+        })
+        .map((widget) => ({ name: widget.name, value: widget.value }));
 }
 
 function restoreLoraDynamicWidgets(node, nodeData, saved) {
-  if (!Array.isArray(saved) || !saved.length) return;
-  const values = new Map();
-  for (const item of saved) {
-    const parsed = parseLoraWidgetName(item.name);
-    if (!parsed || (parsed.set === 1 && parsed.item === 1)) continue;
-    const key = `${parsed.set}:${parsed.item}`;
-    const row = values.get(key) ?? { set: parsed.set, item: parsed.item };
-    row[parsed.kind] = item.value;
-    values.set(key, row);
-  }
-  for (const row of [...values.values()].sort((a, b) => a.set - b.set || a.item - b.item)) {
-    addLoraToSet(node, nodeData, row.set, row.item, row);
-  }
-  normalizeLoraBaseWidgets(node, nodeData);
-  moveLoraButtonsToEnd(node);
-  resizeNode(node);
+    if (!Array.isArray(saved) || !saved.length) return;
+    const values = new Map();
+    for (const item of saved) {
+        const parsed = parseLoraWidgetName(item.name);
+        if (!parsed || (parsed.set === 1 && parsed.item === 1)) continue;
+        const key = `${parsed.set}:${parsed.item}`;
+        const row = values.get(key) ?? { set: parsed.set, item: parsed.item };
+        row[parsed.kind] = item.value;
+        values.set(key, row);
+    }
+    for (const row of [...values.values()].sort((a, b) => a.set - b.set || a.item - b.item)) {
+        addLoraToSet(node, nodeData, row.set, row.item, row);
+    }
+    normalizeLoraBaseWidgets(node, nodeData);
+    moveLoraButtonsToEnd(node);
+    resizeNode(node);
+}
+
+function findWidgetByName(node, name) {
+    return (node.widgets || []).find((widget) => widget.name === name);
+}
+
+function stripSafetensorsExt(name) {
+    const text = String(name ?? "").replaceAll("\\", "/");
+    return text.toLowerCase().endsWith(".safetensors") ? text.slice(0, -12) : text;
+}
+
+function ensureSafetensorsExt(name) {
+    const text = String(name ?? "").trim().replaceAll("\\", "/");
+    if (!text) return text;
+    return text.toLowerCase().endsWith(".safetensors") ? text : `${text}.safetensors`;
+}
+
+function parseEpochLoraFile(name) {
+    const text = String(name ?? "").trim().replaceAll("\\", "/");
+    const stem = stripSafetensorsExt(text);
+    const slash = stem.lastIndexOf("/");
+    const dir = slash >= 0 ? stem.slice(0, slash + 1) : "";
+    const fileStem = slash >= 0 ? stem.slice(slash + 1) : stem;
+    const match = /^(.+)-0*([1-9]\d*)$/.exec(fileStem);
+    if (!match) return null;
+    return {
+        base: `${dir}${match[1]}.safetensors`,
+        epoch: Number(match[2]),
+    };
+}
+
+function filenameOnly(path) {
+    const text = String(path ?? "").replaceAll("\\", "/");
+    return text.split("/").pop() ?? text;
+}
+
+function currentEpochRangeBasePath(node) {
+    const selected = ensureSafetensorsExt(findWidgetByName(node, "lora_file")?.value);
+    if (!selected) return "";
+
+    if (node.ognEpochRangeUseSelectedAsBase === false) {
+        const parsed = parseEpochLoraFile(selected);
+        return parsed?.base ?? selected;
+    }
+
+    return selected;
+}
+
+function formatEpochRangeBaseDisplay(node, basePath) {
+    const showRelative = Boolean(findWidgetByName(node, "show_relative_path")?.value);
+    return showRelative ? basePath : filenameOnly(basePath);
+}
+
+function setWidgetValue(widget, value) {
+    if (!widget) return;
+    widget.value = value;
+    widget.callback?.(value);
+}
+
+function updateLoraEpochRangeBaseDisplay(node) {
+    const baseWidget = findWidgetByName(node, "base_lora_name");
+    if (!baseWidget) return;
+
+    const basePath = currentEpochRangeBasePath(node);
+    baseWidget.value = formatEpochRangeBaseDisplay(node, basePath);
+}
+
+function markEpochRangeBaseWidget(node) {
+    const baseWidget = findWidgetByName(node, "base_lora_name");
+    if (!baseWidget) return;
+
+    baseWidget.label = "base_lora_name";
+    baseWidget.tooltip =
+        "Display only. Toggle show_relative_path to switch between filename only and relative path.";
+    if (baseWidget.inputEl) {
+        baseWidget.inputEl.readOnly = true;
+        baseWidget.inputEl.classList?.add("readonly");
+    }
+}
+
+function moveEpochRangeWidgets(node) {
+    if (!node.widgets) return;
+
+    const button = node.ognInsertLastEpochButton;
+    if (button && node.widgets.includes(button)) {
+        const currentIndex = node.widgets.indexOf(button);
+        if (currentIndex >= 0) node.widgets.splice(currentIndex, 1);
+
+        const loraIndex = node.widgets.findIndex((widget) => widget.name === "lora_file");
+        const insertIndex = loraIndex >= 0 ? loraIndex + 1 : node.widgets.length;
+        node.widgets.splice(insertIndex, 0, button);
+    }
+
+    const showPathWidget = findWidgetByName(node, "show_relative_path");
+    if (showPathWidget && node.widgets.includes(showPathWidget)) {
+        const currentIndex = node.widgets.indexOf(showPathWidget);
+        if (currentIndex >= 0) node.widgets.splice(currentIndex, 1);
+        node.widgets.push(showPathWidget);
+    }
+
+    const baseWidget = findWidgetByName(node, "base_lora_name");
+    if (baseWidget && node.widgets.includes(baseWidget)) {
+        const currentIndex = node.widgets.indexOf(baseWidget);
+        if (currentIndex >= 0) node.widgets.splice(currentIndex, 1);
+        node.widgets.push(baseWidget);
+    }
+}
+
+function ensureLoraEpochRangeButton(node, nodeData) {
+    node.serialize_widgets = true;
+    markEpochRangeBaseWidget(node);
+
+    const loraWidget = findWidgetByName(node, "lora_file");
+    if (loraWidget && !loraWidget.ognEpochRangeWrapped) {
+        const originalCallback = loraWidget.callback;
+        loraWidget.callback = function (value) {
+            originalCallback?.apply(this, arguments);
+            node.ognEpochRangeUseSelectedAsBase = true;
+
+            const useDetectedWidget = findWidgetByName(node, "use_detected_epoch");
+            setWidgetValue(useDetectedWidget, false);
+
+            updateLoraEpochRangeBaseDisplay(node);
+            resizeNode(node);
+        };
+        loraWidget.ognEpochRangeWrapped = true;
+    }
+
+    const showPathWidget = findWidgetByName(node, "show_relative_path");
+    if (showPathWidget && !showPathWidget.ognEpochRangeWrapped) {
+        const originalCallback = showPathWidget.callback;
+        showPathWidget.callback = function (value) {
+            originalCallback?.apply(this, arguments);
+            updateLoraEpochRangeBaseDisplay(node);
+            resizeNode(node);
+        };
+        showPathWidget.ognEpochRangeWrapped = true;
+    }
+
+    if (!node.ognInsertLastEpochButton) {
+        node.ognInsertLastEpochButton = node.addWidget(
+            "button",
+            "Insert from last epoch file",
+            null,
+            () => {
+                const selected = findWidgetByName(node, "lora_file")?.value;
+                const parsed = parseEpochLoraFile(selected);
+
+                if (!parsed) {
+                    alert("File name must look like: foo-000120.safetensors");
+                    return;
+                }
+
+                const lastEpochWidget = findWidgetByName(node, "last_epoch");
+                const useDetectedWidget = findWidgetByName(node, "use_detected_epoch");
+
+                node.ognEpochRangeUseSelectedAsBase = false;
+                setWidgetValue(useDetectedWidget, true);
+                setWidgetValue(lastEpochWidget, parsed.epoch);
+                updateLoraEpochRangeBaseDisplay(node);
+                resizeNode(node);
+            }
+        );
+    }
+
+    if (node.ognEpochRangeUseSelectedAsBase == null) {
+        node.ognEpochRangeUseSelectedAsBase = true;
+    }
+
+    updateLoraEpochRangeBaseDisplay(node);
+    moveEpochRangeWidgets(node);
+    resizeNode(node);
 }
 
 function ensureButton(node, config, nodeData) {
-  node.serialize_widgets = true;
-  if (node.ognAddButton && (node.ognRemoveButton || !config.removeButton)) {
+    node.serialize_widgets = true;
+    if (node.ognAddButton && (node.ognRemoveButton || !config.removeButton)) {
+        moveButtonToEnd(node);
+        return;
+    }
+    if (!node.ognAddButton) {
+        node.ognAddButton = node.addWidget("button", config.button, null, () => {
+            addRow(node, config, nodeData);
+        });
+    }
+    if (config.removeButton && !node.ognRemoveButton) {
+        node.ognRemoveButton = node.addWidget("button", config.removeButton, null, () => {
+            removeLastRow(node, config);
+        });
+    }
     moveButtonToEnd(node);
-    return;
-  }
-  if (!node.ognAddButton) {
-    node.ognAddButton = node.addWidget("button", config.button, null, () => {
-      addRow(node, config, nodeData);
-    });
-  }
-  if (config.removeButton && !node.ognRemoveButton) {
-    node.ognRemoveButton = node.addWidget("button", config.removeButton, null, () => {
-      removeLastRow(node, config);
-    });
-  }
-  moveButtonToEnd(node);
 }
 
 app.registerExtension({
-  name: "ogn.xy_plot.dynamic_axes",
-  async beforeRegisterNodeDef(nodeType, nodeData) {
-    const config = NODE_CONFIG[nodeData.name];
-    if (!config) {
-      return;
-    }
+    name: "ogn.xy_plot.dynamic_axes",
+    async beforeRegisterNodeDef(nodeType, nodeData) {
+        const config = NODE_CONFIG[nodeData.name];
+        if (!config) {
+            return;
+        }
 
-    const onNodeCreated = nodeType.prototype.onNodeCreated;
-    nodeType.prototype.onNodeCreated = function () {
-      onNodeCreated?.apply(this, arguments);
-      if (config.loraSets) {
-        ensureLoraButtons(this, nodeData);
-        return;
-      }
-      ensureButton(this, config, nodeData);
-    };
+        const onNodeCreated = nodeType.prototype.onNodeCreated;
+        nodeType.prototype.onNodeCreated = function () {
+            onNodeCreated?.apply(this, arguments);
+            if (config.loraSets) {
+                ensureLoraButtons(this, nodeData);
+                return;
+            }
+            if (config.loraEpochRange) {
+                ensureLoraEpochRangeButton(this, nodeData);
+                return;
+            }
+            ensureButton(this, config, nodeData);
+        };
 
-    const configure = nodeType.prototype.configure;
-    nodeType.prototype.configure = function (info) {
-      configure?.apply(this, arguments);
-      if (config.loraSets) {
-        ensureLoraButtons(this, nodeData);
-        restoreLoraBaseValues(this, nodeData, info?.ogn_lora_base ?? inferLoraBaseValuesFromWidgets(info, nodeData));
-        restoreLoraDynamicWidgets(this, nodeData, info?.ogn_dynamic_widgets);
-        return;
-      }
-      ensureButton(this, config, nodeData);
-      restoreDynamicWidgets(this, config, nodeData, info?.ogn_dynamic_widgets);
-    };
+        const configure = nodeType.prototype.configure;
+        nodeType.prototype.configure = function (info) {
+            configure?.apply(this, arguments);
+            if (config.loraSets) {
+                ensureLoraButtons(this, nodeData);
+                restoreLoraBaseValues(this, nodeData, info?.ogn_lora_base ?? inferLoraBaseValuesFromWidgets(info, nodeData));
+                restoreLoraDynamicWidgets(this, nodeData, info?.ogn_dynamic_widgets);
+                return;
+            }
+            if (config.loraEpochRange) {
+                ensureLoraEpochRangeButton(this, nodeData);
+                return;
+            }
+            ensureButton(this, config, nodeData);
+            restoreDynamicWidgets(this, config, nodeData, info?.ogn_dynamic_widgets);
+        };
 
-    const onSerialize = nodeType.prototype.onSerialize;
-    nodeType.prototype.onSerialize = function (data) {
-      onSerialize?.apply(this, arguments);
-      if (config.loraSets) {
-        normalizeLoraBaseWidgets(this, nodeData);
-        data.ogn_lora_base = getLoraBaseValues(this);
-        data.ogn_dynamic_widgets = saveLoraDynamicWidgets(this, nodeData);
-        return;
-      }
-      data.ogn_dynamic_widgets = saveDynamicWidgets(this, config);
-    };
-  },
+        const onSerialize = nodeType.prototype.onSerialize;
+        nodeType.prototype.onSerialize = function (data) {
+            onSerialize?.apply(this, arguments);
+            if (config.loraSets) {
+                normalizeLoraBaseWidgets(this, nodeData);
+                data.ogn_lora_base = getLoraBaseValues(this);
+                data.ogn_dynamic_widgets = saveLoraDynamicWidgets(this, nodeData);
+                return;
+            }
+            if (config.loraEpochRange) {
+                updateLoraEpochRangeBaseDisplay(this);
+                return;
+            }
+            data.ogn_dynamic_widgets = saveDynamicWidgets(this, config);
+        };
+    },
 });
