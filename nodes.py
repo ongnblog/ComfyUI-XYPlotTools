@@ -547,13 +547,16 @@ class OGN_XYPlot:
         )
 
         images = []
-        grid_cells = []
         cell_lora_names = []
+        x_labels = [self._label(x_type, value) for value in x_values]
+        y_labels = [self._label(y_type, value) for value in y_values]
+        grid_tensor = None
+        grid_layout = None
         cell_count = len(x_values) * len(y_values)
         completed_cells = 0
-        self._send_cell_progress(unique_id, completed_cells, cell_count)
+        self._send_cell_progress(
+            unique_id, completed_cells, cell_count, extra_pnginfo)
         for y_index, y_value in enumerate(y_values):
-            row = []
             for x_index, x_value in enumerate(x_values):
                 state = copy.copy(base)
                 state.seed = self._cell_seed(
@@ -600,36 +603,45 @@ class OGN_XYPlot:
                         extra_pnginfo,
                     )
                 images.append(decoded)
-                row.append(decoded[0])
+                if grid_tensor is None:
+                    grid_tensor, grid_layout = self._make_grid_tensor(
+                        decoded[0],
+                        column_count=len(x_values),
+                        row_count=len(y_values),
+                        x_labels=x_labels,
+                        y_labels=y_labels,
+                        include_labels=include_labels,
+                        font_size=label_font_size,
+                        padding=label_padding,
+                    )
+                self._copy_grid_cell(
+                    grid_tensor,
+                    grid_layout,
+                    decoded[0],
+                    x_index,
+                    y_index,
+                )
                 completed_cells += 1
                 self._send_cell_progress(
-                    unique_id, completed_cells, cell_count)
-            grid_cells.append(row)
+                    unique_id, completed_cells, cell_count, extra_pnginfo)
 
         cell_batch = torch.cat(images, dim=0)
-        grid = self._make_grid_image(
-            grid_cells,
-            x_labels=[self._label(x_type, value) for value in x_values],
-            y_labels=[self._label(y_type, value) for value in y_values],
-            include_labels=include_labels,
-            font_size=label_font_size,
-            padding=label_padding,
-        )
         return (
-            grid,
+            grid_tensor,
             [image[index:index + 1, ...] for image in images for index in range(image.shape[0])],
             cell_batch,
             base.model_name,
             "\n".join(cell_lora_names),
         )
 
-    def _send_cell_progress(self, unique_id, completed, total):
+    def _send_cell_progress(self, unique_id, completed, total, extra_pnginfo):
         if unique_id is None:
             return
         PromptServer.instance.send_sync(
             "ogn_xy_plot/cell_progress",
             {
                 "node_id": str(unique_id),
+                "workflow_id": self._workflow_id(extra_pnginfo),
                 "value": int(completed),
                 "max": int(total),
             },
@@ -657,10 +669,16 @@ class OGN_XYPlot:
             "ogn_xy_plot/cell_preview",
             {
                 "node_id": str(unique_id),
+                "workflow_id": self._workflow_id(extra_pnginfo),
                 "cell_index": int(cell_index),
                 "images": preview.get("ui", {}).get("images", []),
             },
         )
+
+    def _workflow_id(self, extra_pnginfo=None):
+        workflow = (extra_pnginfo or {}).get("workflow", {})
+        workflow_id = workflow.get("id") if isinstance(workflow, dict) else None
+        return str(workflow_id) if workflow_id is not None else None
 
     def _save_cell_images(
         self,
@@ -1010,18 +1028,25 @@ class OGN_XYPlot:
         name = text.rsplit("/", 1)[-1]
         return os.path.splitext(name)[0] or name
 
-    def _make_grid_image(self, rows, x_labels, y_labels, include_labels, font_size, padding):
-        first = rows[0][0]
+    def _make_grid_tensor(
+        self,
+        first,
+        column_count,
+        row_count,
+        x_labels,
+        y_labels,
+        include_labels,
+        font_size,
+        padding,
+    ):
         cell_h, cell_w = int(first.shape[0]), int(first.shape[1])
-        cols = len(rows[0])
-        row_count = len(rows)
 
         font = self._font(font_size)
         left = self._y_label_area(
             y_labels, font, padding) if include_labels and any(y_labels) else 0
         top = self._x_label_area(
             x_labels, font, padding) if include_labels and any(x_labels) else 0
-        width = left + cols * cell_w
+        width = left + column_count * cell_w
         height = top + row_count * cell_h
         canvas = Image.new("RGB", (width, height), (24, 24, 24))
         draw = ImageDraw.Draw(canvas)
@@ -1034,11 +1059,24 @@ class OGN_XYPlot:
                 self._draw_label(
                     draw, label, (0, top + index * cell_h, left, cell_h), font, padding)
 
-        for y, row in enumerate(rows):
-            for x, tensor in enumerate(row):
-                canvas.paste(self._tensor_to_pil(tensor),
-                             (left + x * cell_w, top + y * cell_h))
-        return self._pil_to_tensor(canvas)
+        grid = self._pil_to_tensor(canvas).to(
+            device=first.device,
+            dtype=first.dtype,
+        )
+        return grid, {
+            "left": left,
+            "top": top,
+            "cell_w": cell_w,
+            "cell_h": cell_h,
+        }
+
+    def _copy_grid_cell(self, grid, layout, tensor, x_index, y_index):
+        x = layout["left"] + x_index * layout["cell_w"]
+        y = layout["top"] + y_index * layout["cell_h"]
+        cell = tensor
+        if cell.device != grid.device or cell.dtype != grid.dtype:
+            cell = cell.to(device=grid.device, dtype=grid.dtype)
+        grid[0, y:y + layout["cell_h"], x:x + layout["cell_w"], :].copy_(cell)
 
     def _y_label_area(self, labels, font, padding):
         if not labels:
@@ -1120,11 +1158,6 @@ class OGN_XYPlot:
             left, top, right, bottom = font.getbbox(text)
             return right - left, bottom - top
         return font.getsize(text)
-
-    def _tensor_to_pil(self, tensor):
-        array = tensor.detach().cpu().numpy()
-        array = np.clip(array * 255.0, 0, 255).astype(np.uint8)
-        return Image.fromarray(array)
 
     def _pil_to_tensor(self, image):
         array = np.asarray(image).astype(np.float32) / 255.0
