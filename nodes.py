@@ -84,24 +84,50 @@ def _lora_files_in_folder(folder):
         return []
     folder = str(folder).strip().strip('"')
     if os.path.isdir(folder):
-        loras = []
-        for name in sorted(os.listdir(folder), key=lambda value: value.lower()):
-            path = os.path.join(folder, name)
-            if os.path.isfile(path) and os.path.splitext(name)[1].lower() in LORA_EXTENSIONS:
-                loras.append(path)
-        return loras
+        return _scan_lora_directory(folder)
 
     folder = "." if folder == "." else _normalize_model_path(folder)
     loras = []
-    for value in folder_paths.get_filename_list("loras"):
-        if _model_folder(value) == folder:
-            loras.append(_normalize_model_path(value))
+    for root in folder_paths.get_folder_paths("loras"):
+        root = os.path.abspath(root)
+        target = root if folder == "." else os.path.abspath(os.path.join(root, *folder.split("/")))
+        try:
+            if os.path.commonpath([root, target]) != root:
+                continue
+        except ValueError:
+            continue
+        loras.extend(_scan_lora_directory(target))
     return sorted(loras, key=lambda value: value.lower())
 
 
+def _scan_lora_directory(folder):
+    if not os.path.isdir(folder):
+        return []
+    loras = []
+    for name in sorted(os.listdir(folder), key=lambda value: value.lower()):
+        path = os.path.join(folder, name)
+        if os.path.isfile(path) and os.path.splitext(name)[1].lower() in LORA_EXTENSIONS:
+            loras.append(path)
+    return loras
+
+
+def _lora_folder_signature(folder):
+    signature = []
+    for path in _lora_files_in_folder(folder):
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        signature.append((os.path.normcase(os.path.abspath(path)), stat.st_mtime_ns, stat.st_size))
+    return repr(signature)
+
+
 def _lora_path(lora_name):
+    lora_name = str(lora_name)
     if os.path.isfile(lora_name):
         return lora_name
+    if os.path.isabs(lora_name) or re.match(r"^[A-Za-z]:[\\/]", lora_name):
+        return None
     return folder_paths.get_full_path_or_raise("loras", lora_name)
 
 
@@ -289,6 +315,10 @@ class OGN_XYLoraFolderSelectAxis:
     RETURN_NAMES = ("axis",)
     FUNCTION = "build_axis"
     CATEGORY = "OGN/XY Plot"
+
+    @classmethod
+    def IS_CHANGED(cls, lora_folder, strength_model):
+        return float("NaN")
 
     def build_axis(self, lora_folder, strength_model):
         strength = float(strength_model)
@@ -602,6 +632,8 @@ class OGN_XYPlot:
             if strength_model == 0 and strength_clip == 0:
                 return model, clip
             lora_path = _lora_path(lora_name)
+            if lora_path is None:
+                return model, clip
             lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
             return comfy.sd.load_lora_for_models(model, clip, lora, strength_model, strength_clip)
         if value.strip().lower() in {"none", "no lora", "disabled", "off"}:
@@ -613,6 +645,8 @@ class OGN_XYPlot:
         if strength_model == 0 and strength_clip == 0:
             return model, clip
         lora_path = _lora_path(lora_name)
+        if lora_path is None:
+            return model, clip
         lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
         return comfy.sd.load_lora_for_models(model, clip, lora, strength_model, strength_clip)
 
