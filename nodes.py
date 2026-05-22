@@ -554,8 +554,7 @@ class OGN_XYPlot:
         grid_layout = None
         cell_count = len(x_values) * len(y_values)
         completed_cells = 0
-        self._send_cell_progress(
-            unique_id, completed_cells, cell_count, extra_pnginfo)
+        self._send_cell_progress(unique_id, completed_cells, cell_count)
         for y_index, y_value in enumerate(y_values):
             for x_index, x_value in enumerate(x_values):
                 state = copy.copy(base)
@@ -623,7 +622,7 @@ class OGN_XYPlot:
                 )
                 completed_cells += 1
                 self._send_cell_progress(
-                    unique_id, completed_cells, cell_count, extra_pnginfo)
+                    unique_id, completed_cells, cell_count)
 
         cell_batch = torch.cat(images, dim=0)
         return (
@@ -634,14 +633,13 @@ class OGN_XYPlot:
             "\n".join(cell_lora_names),
         )
 
-    def _send_cell_progress(self, unique_id, completed, total, extra_pnginfo):
+    def _send_cell_progress(self, unique_id, completed, total):
         if unique_id is None:
             return
         PromptServer.instance.send_sync(
             "ogn_xy_plot/cell_progress",
             {
                 "node_id": str(unique_id),
-                "workflow_id": self._workflow_id(extra_pnginfo),
                 "value": int(completed),
                 "max": int(total),
             },
@@ -669,16 +667,10 @@ class OGN_XYPlot:
             "ogn_xy_plot/cell_preview",
             {
                 "node_id": str(unique_id),
-                "workflow_id": self._workflow_id(extra_pnginfo),
                 "cell_index": int(cell_index),
                 "images": preview.get("ui", {}).get("images", []),
             },
         )
-
-    def _workflow_id(self, extra_pnginfo=None):
-        workflow = (extra_pnginfo or {}).get("workflow", {})
-        workflow_id = workflow.get("id") if isinstance(workflow, dict) else None
-        return str(workflow_id) if workflow_id is not None else None
 
     def _save_cell_images(
         self,

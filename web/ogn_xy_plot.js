@@ -924,20 +924,8 @@ function ensureCellSaveWidgets(node) {
     queueNodeResize(node);
 }
 
-function graphWorkflowId(graph) {
-    return graph?.rootGraph?.id ?? graph?.id ?? null;
-}
-
-function nodeFromWorkflowEvent(detail) {
-    const node = app.graph?.getNodeById?.(Number(detail?.node_id));
-    const eventWorkflowId = detail?.workflow_id;
-    const workflowId = graphWorkflowId(node?.graph ?? app.graph);
-    if (!node || eventWorkflowId == null || workflowId == null) return null;
-    return String(eventWorkflowId) === String(workflowId) ? node : null;
-}
-
 api.addEventListener("ogn_xy_plot/cell_progress", ({ detail }) => {
-    const node = nodeFromWorkflowEvent(detail);
+    const node = app.graph?.getNodeById?.(Number(detail?.node_id));
     if (!node) return;
     node.ognCellProgress = {
         value: Number(detail.value) || 0,
@@ -986,7 +974,7 @@ function showCellPreviews(node, previews) {
 }
 
 api.addEventListener("ogn_xy_plot/cell_preview", ({ detail }) => {
-    const sourceNode = nodeFromWorkflowEvent(detail);
+    const sourceNode = app.graph?.getNodeById?.(Number(detail?.node_id));
     if (!sourceNode) return;
 
     for (const targetNode of linkedCellImageNodes(sourceNode)) {
