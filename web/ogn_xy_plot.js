@@ -1,7 +1,11 @@
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 import { ComfyWidgets } from "../../scripts/widgets.js";
 
 const NODE_CONFIG = {
+    OGN_XYPlot: {
+        cellProgress: true,
+    },
     OGN_XYCheckpointAxis: {
         label: "Checkpoint",
         button: "+ Add Checkpoint",
@@ -220,9 +224,18 @@ function resizeNode(node) {
         return;
     }
     const size = node.computeSize();
-    node.size[0] = Math.max(node.size[0], size[0]);
-    node.size[1] = Math.max(node.size[1], size[1]);
+    node.setSize?.([
+        Math.max(node.size[0], size[0]),
+        Math.max(node.size[1], size[1] + 8),
+    ]);
     node.setDirtyCanvas(true, true);
+}
+
+function queueNodeResize(node) {
+    requestAnimationFrame(() => {
+        resizeNode(node);
+        requestAnimationFrame(() => resizeNode(node));
+    });
 }
 
 function dynamicWidgets(node, config) {
@@ -801,11 +814,199 @@ function ensureButton(node, config, nodeData) {
     moveButtonToEnd(node);
 }
 
+function requestNodeRedraw() {
+    app.graph?.setDirtyCanvas?.(true, false);
+}
+
+function drawCellProgress(node, ctx) {
+    const progress = node.ognCellProgress;
+    if (!progress?.max || node.flags?.collapsed) return;
+
+    const width = Math.max(0, node.size[0] - 24);
+    const barX = 12;
+    const barY = node.ognCellProgressY ?? 0;
+    const barH = 22;
+    const ratio = Math.min(1, Math.max(0, progress.value / progress.max));
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(barX, barY, width, barH, 4);
+    ctx.fillStyle = "rgba(24, 24, 24, 0.86)";
+    ctx.fill();
+
+    if (ratio > 0) {
+        ctx.beginPath();
+        ctx.roundRect(barX, barY, width * ratio, barH, 4);
+        ctx.fillStyle = "#3f9f62";
+        ctx.fill();
+    }
+
+    ctx.fillStyle = "#f2f2f2";
+    ctx.font = "bold 12px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`Cells: ${progress.value}/${progress.max}`, barX + width / 2, barY + barH / 2);
+    ctx.restore();
+}
+
+function ensureCellProgressWidget(node) {
+    if (!node.widgets || node.ognCellProgressWidget) return;
+
+    node.ognCellProgressWidget = {
+        type: "custom",
+        name: "ogn_cell_progress",
+        value: null,
+        serialize: false,
+        options: { serialize: false },
+        computeSize: () => [0, 30],
+        draw(ctx, currentNode, width, y) {
+            currentNode.ognCellProgressY = y + 4;
+            drawCellProgress(currentNode, ctx);
+        },
+    };
+    node.widgets.unshift(node.ognCellProgressWidget);
+    queueNodeResize(node);
+}
+
+function scheduleCellProgressWidget(node) {
+    requestAnimationFrame(() => ensureCellProgressWidget(node));
+}
+
+function removeSerializedCellProgressValue(info) {
+    if (Array.isArray(info?.widgets_values) && info.widgets_values[0] == null) {
+        info.widgets_values.shift();
+    }
+}
+
+function setWidgetVisible(node, widget, visible) {
+    if (!widget) return;
+    if (!widget.ognVisibilityState) {
+        widget.ognVisibilityState = {
+            type: widget.type,
+            computeSize: widget.computeSize,
+        };
+    }
+    widget.type = visible ? widget.ognVisibilityState.type : "ogn_hidden";
+    widget.computeSize = visible ? widget.ognVisibilityState.computeSize : () => [0, -4];
+}
+
+function updateCellSaveWidgets(node) {
+    const saveWidget = findWidgetByName(node, "save_each_cell_image");
+    const directoryWidget = findWidgetByName(node, "cell_image_output_directory");
+    const prefixWidget = findWidgetByName(node, "cell_image_filename_prefix");
+    const loraNameWidget = findWidgetByName(node, "add_lora_name_to_cell_filename");
+    if (!saveWidget || !directoryWidget || !prefixWidget || !loraNameWidget) return;
+
+    saveWidget.tooltip = "Save each generated cell image separately. The current cell LoRA name is added to its filename.";
+    directoryWidget.tooltip = "Subdirectory inside the ComfyUI output folder for saved cell images. Time tokens such as [time(%Y-%m-%d)] are supported. Leave blank to save in output.";
+    prefixWidget.tooltip = "Filename prefix for saved cell images. Cell index is added automatically.";
+    loraNameWidget.tooltip = "Append the current cell LoRA name after the filename prefix and cell index.";
+    setWidgetVisible(node, directoryWidget, Boolean(saveWidget.value));
+    setWidgetVisible(node, prefixWidget, Boolean(saveWidget.value));
+    setWidgetVisible(node, loraNameWidget, Boolean(saveWidget.value));
+    queueNodeResize(node);
+}
+
+function ensureCellSaveWidgets(node) {
+    const saveWidget = findWidgetByName(node, "save_each_cell_image");
+    if (!saveWidget || saveWidget.ognCellSaveWrapped) {
+        updateCellSaveWidgets(node);
+        return;
+    }
+
+    const callback = saveWidget.callback;
+    saveWidget.callback = function () {
+        callback?.apply(this, arguments);
+        updateCellSaveWidgets(node);
+    };
+    saveWidget.ognCellSaveWrapped = true;
+    updateCellSaveWidgets(node);
+    queueNodeResize(node);
+}
+
+api.addEventListener("ogn_xy_plot/cell_progress", ({ detail }) => {
+    const node = app.graph?.getNodeById?.(Number(detail?.node_id));
+    if (!node) return;
+    node.ognCellProgress = {
+        value: Number(detail.value) || 0,
+        max: Number(detail.max) || 0,
+    };
+    requestNodeRedraw();
+});
+
+function cellImageOutput(node) {
+    return (node.outputs || []).find((output) => output.name === "cell_image") ?? node.outputs?.[1];
+}
+
+function linkedCellImageNodes(node) {
+    const links = cellImageOutput(node)?.links || [];
+    return links
+        .map((linkId) => app.graph?.links?.[linkId])
+        .map((link) => app.graph?.getNodeById?.(link?.target_id))
+        .filter(Boolean);
+}
+
+function cellPreviewUrl(image) {
+    const params = new URLSearchParams({
+        filename: image.filename ?? "",
+        subfolder: image.subfolder ?? "",
+        type: image.type ?? "temp",
+    });
+    return `/view?${params.toString()}${app.getPreviewFormatParam?.() ?? ""}`;
+}
+
+function showCellPreviews(node, previews) {
+    if (!Array.isArray(previews) || !previews.length) return;
+
+    node.imgs = previews.map((preview) => {
+        const image = new Image();
+        image.onload = () => {
+            node.setSizeForImage?.();
+            node.setDirtyCanvas?.(true, true);
+            requestNodeRedraw();
+        };
+        image.src = cellPreviewUrl(preview);
+        return image;
+    });
+    node.setSizeForImage?.();
+    node.setDirtyCanvas?.(true, true);
+    requestNodeRedraw();
+}
+
+api.addEventListener("ogn_xy_plot/cell_preview", ({ detail }) => {
+    const sourceNode = app.graph?.getNodeById?.(Number(detail?.node_id));
+    if (!sourceNode) return;
+
+    for (const targetNode of linkedCellImageNodes(sourceNode)) {
+        showCellPreviews(
+            targetNode,
+            detail.images,
+        );
+    }
+});
+
 app.registerExtension({
     name: "ogn.xy_plot.dynamic_axes",
     async beforeRegisterNodeDef(nodeType, nodeData) {
         const config = NODE_CONFIG[nodeData.name];
         if (!config) {
+            return;
+        }
+        if (config.cellProgress) {
+            const onNodeCreated = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                onNodeCreated?.apply(this, arguments);
+                scheduleCellProgressWidget(this);
+                ensureCellSaveWidgets(this);
+            };
+
+            const configure = nodeType.prototype.configure;
+            nodeType.prototype.configure = function (info) {
+                removeSerializedCellProgressValue(info);
+                configure?.apply(this, arguments);
+                ensureCellProgressWidget(this);
+                ensureCellSaveWidgets(this);
+            };
             return;
         }
 
