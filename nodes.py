@@ -1,9 +1,10 @@
 import copy
+import datetime
 import math
 import os
 import re
 import textwrap
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import torch
@@ -14,6 +15,7 @@ import comfy.samplers
 import comfy.sd
 import comfy.utils
 import folder_paths
+from server import PromptServer
 
 
 AXIS_TYPES = [
@@ -80,6 +82,8 @@ class PlotState:
     sampler_name: str
     scheduler: str
     denoise: float
+    model_name: str = ""
+    lora_names: list = field(default_factory=list)
 
 
 def _sorted_kwargs(kwargs, prefix):
@@ -472,17 +476,29 @@ class OGN_XYPlot:
                 "include_labels": ("BOOLEAN", {"default": True}),
                 "label_font_size": ("INT", {"default": 16, "min": 8, "max": 64}),
                 "label_padding": ("INT", {"default": 10, "min": 0, "max": 80}),
+                "save_each_cell_image": ("BOOLEAN", {"default": False}),
+                "cell_image_output_directory": ("STRING", {"default": "OGN_XYPlot"}),
+                "cell_image_filename_prefix": ("STRING", {"default": "OGN_XYPlot_cell"}),
+                "add_lora_name_to_cell_filename": ("BOOLEAN", {"default": True}),
             },
             "optional": {
                 "x_axis": ("OGN_XY_AXIS",),
                 "y_axis": ("OGN_XY_AXIS",),
             },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+                "prompt": "PROMPT",
+                "extra_pnginfo": "EXTRA_PNGINFO",
+            },
         }
 
-    RETURN_TYPES = ("IMAGE", "IMAGE")
-    RETURN_NAMES = ("plot_image", "cell_images")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("plot_image", "cell_image", "cell_image_batch",
+                    "model_name", "cell_lora_names")
+    OUTPUT_IS_LIST = (False, True, False, False, False)
     FUNCTION = "plot"
     CATEGORY = "OGN/XY Plot"
+    OUTPUT_NODE = True
 
     def plot(
         self,
@@ -503,8 +519,15 @@ class OGN_XYPlot:
         include_labels,
         label_font_size,
         label_padding,
+        save_each_cell_image,
+        cell_image_output_directory,
+        cell_image_filename_prefix,
+        add_lora_name_to_cell_filename,
         x_axis=None,
         y_axis=None,
+        unique_id=None,
+        prompt=None,
+        extra_pnginfo=None,
     ):
         x_type, x_values = self._normalize_axis(x_axis)
         y_type, y_values = self._normalize_axis(y_axis)
@@ -520,10 +543,15 @@ class OGN_XYPlot:
             sampler_name=sampler_name,
             scheduler=scheduler,
             denoise=denoise,
+            model_name=self._model_name(model),
         )
 
         images = []
         grid_cells = []
+        cell_lora_names = []
+        cell_count = len(x_values) * len(y_values)
+        completed_cells = 0
+        self._send_cell_progress(unique_id, completed_cells, cell_count)
         for y_index, y_value in enumerate(y_values):
             row = []
             for x_index, x_value in enumerate(x_values):
@@ -534,6 +562,9 @@ class OGN_XYPlot:
                                  x_values, diffusion_weight_dtype)
                 self._apply_axis(state, y_type, y_value,
                                  y_values, diffusion_weight_dtype)
+                cell_lora_name = self._format_name_output(
+                    state.lora_names, default="None")
+                cell_lora_names.append(cell_lora_name)
 
                 positive = self._encode_text(state.clip, state.positive_prompt)
                 negative = self._encode_text(state.clip, state.negative_prompt)
@@ -550,8 +581,29 @@ class OGN_XYPlot:
                     state.denoise,
                 )
                 decoded = self._decode(state.vae, sampled)
+                self._send_cell_preview(
+                    unique_id,
+                    decoded,
+                    completed_cells + 1,
+                    prompt,
+                    extra_pnginfo,
+                )
+                if save_each_cell_image:
+                    self._save_cell_images(
+                        decoded,
+                        cell_image_output_directory,
+                        cell_image_filename_prefix,
+                        add_lora_name_to_cell_filename,
+                        completed_cells + 1,
+                        cell_lora_name,
+                        prompt,
+                        extra_pnginfo,
+                    )
                 images.append(decoded)
                 row.append(decoded[0])
+                completed_cells += 1
+                self._send_cell_progress(
+                    unique_id, completed_cells, cell_count)
             grid_cells.append(row)
 
         cell_batch = torch.cat(images, dim=0)
@@ -563,7 +615,106 @@ class OGN_XYPlot:
             font_size=label_font_size,
             padding=label_padding,
         )
-        return (grid, cell_batch)
+        return (
+            grid,
+            [image[index:index + 1, ...] for image in images for index in range(image.shape[0])],
+            cell_batch,
+            base.model_name,
+            "\n".join(cell_lora_names),
+        )
+
+    def _send_cell_progress(self, unique_id, completed, total):
+        if unique_id is None:
+            return
+        PromptServer.instance.send_sync(
+            "ogn_xy_plot/cell_progress",
+            {
+                "node_id": str(unique_id),
+                "value": int(completed),
+                "max": int(total),
+            },
+        )
+
+    def _send_cell_preview(
+        self,
+        unique_id,
+        images,
+        cell_index,
+        prompt,
+        extra_pnginfo,
+    ):
+        if unique_id is None:
+            return
+
+        import nodes
+
+        preview = nodes.PreviewImage().save_images(
+            images,
+            prompt=prompt,
+            extra_pnginfo=extra_pnginfo,
+        )
+        PromptServer.instance.send_sync(
+            "ogn_xy_plot/cell_preview",
+            {
+                "node_id": str(unique_id),
+                "cell_index": int(cell_index),
+                "images": preview.get("ui", {}).get("images", []),
+            },
+        )
+
+    def _save_cell_images(
+        self,
+        images,
+        output_directory,
+        filename_prefix,
+        add_lora_name,
+        cell_index,
+        lora_name,
+        prompt,
+        extra_pnginfo,
+    ):
+        import nodes
+
+        prefix = self._cell_filename_prefix(output_directory, filename_prefix)
+        cell = f"cell-{int(cell_index):04d}"
+        lora = self._safe_filename_component(lora_name or "None")
+        parts = [prefix, cell]
+        if add_lora_name:
+            parts.append(lora)
+        nodes.SaveImage().save_images(
+            images,
+            filename_prefix="_".join(parts),
+            prompt=prompt,
+            extra_pnginfo=extra_pnginfo,
+        )
+
+    def _cell_filename_prefix(self, output_directory, filename_prefix):
+        directory = self._expand_cell_output_directory_tokens(
+            output_directory).strip().replace("\\", "/")
+        directory = os.path.normpath(directory).replace("\\", "/")
+        if directory in {"", "."}:
+            directory = ""
+        elif directory == ".." or directory.startswith("../") or os.path.isabs(directory):
+            raise ValueError(
+                "cell_image_output_directory must stay inside the ComfyUI output directory.")
+
+        filename = self._safe_filename_component(
+            filename_prefix or "OGN_XYPlot_cell")
+        return f"{directory}/{filename}" if directory else filename
+
+    def _expand_cell_output_directory_tokens(self, value):
+        text = str(value or "")
+
+        def expand_time(match):
+            return datetime.datetime.now().strftime(match.group(1))
+
+        return re.sub(r"\[time\((.*?)\)\]", expand_time, text)
+
+    def _safe_filename_component(self, value):
+        text = str(value or "").strip().replace("\\", "/")
+        text = text.rsplit("/", 1)[-1]
+        text = re.sub(r'[<>:"/\\|?*\r\n]+', "_", text)
+        return text[:120].strip(" ._") or "None"
 
     def _normalize_axis(self, axis):
         if not axis:
@@ -579,14 +730,18 @@ class OGN_XYPlot:
             return
         if axis_type == "Checkpoint":
             state.model, state.clip, state.vae = self._load_checkpoint(value)
+            state.model_name = self._display_name(value)
         elif axis_type == "Diffusion Model":
             state.model = self._load_diffusion_model(
                 value, diffusion_weight_dtype)
+            state.model_name = self._display_name(value)
         elif axis_type == "VAE":
             state.vae = self._load_vae(value)
         elif axis_type == "LoRA":
             state.model, state.clip = self._apply_lora(
                 state.model, state.clip, value)
+            state.lora_names = self._unique_names(
+                state.lora_names + self._lora_names(value))
         elif axis_type == "CLIP Skip":
             state.clip = self._apply_clip_skip(state.clip, int(value))
         elif axis_type == "Prompt S/R":
@@ -634,6 +789,53 @@ class OGN_XYPlot:
         )
         return out[:3]
 
+    def _model_name(self, model):
+        cached_init = getattr(model, "cached_patcher_init", None)
+        if not cached_init or len(cached_init) < 2:
+            return ""
+        args = cached_init[1]
+        if not args:
+            return ""
+        path = args[0]
+        return self._display_name(path) if isinstance(path, str) else ""
+
+    def _lora_names(self, value):
+        if isinstance(value, dict):
+            if "loras" in value:
+                names = []
+                for lora_value in value.get("loras", []):
+                    names.extend(self._lora_names(lora_value))
+                return names
+            lora_name = value.get("lora", "None")
+            strength_model = float(value.get("strength_model", 1.0))
+            strength_clip = float(value.get("strength_clip", strength_model))
+            if self._is_disabled_lora(lora_name) or (strength_model == 0 and strength_clip == 0):
+                return []
+            return [self._display_name(lora_name)]
+
+        text = str(value or "").strip()
+        if self._is_disabled_lora(text):
+            return []
+        parts = [part.strip() for part in text.split(":")]
+        lora_name = parts[0]
+        strength_model = float(parts[1]) if len(
+            parts) > 1 and parts[1] else 1.0
+        strength_clip = float(parts[2]) if len(
+            parts) > 2 and parts[2] else strength_model
+        if strength_model == 0 and strength_clip == 0:
+            return []
+        return [self._display_name(lora_name)]
+
+    def _format_name_output(self, names, default=""):
+        names = self._unique_names(names)
+        return ", ".join(names) if names else default
+
+    def _unique_names(self, names):
+        return list(dict.fromkeys(name for name in names if name))
+
+    def _is_disabled_lora(self, name):
+        return str(name).strip().lower() in {"none", "no lora", "disabled", "off"}
+
     def _load_diffusion_model(self, unet_name, weight_dtype):
         model_options = {}
         if weight_dtype == "fp8_e4m3fn" and hasattr(torch, "float8_e4m3fn"):
@@ -669,14 +871,14 @@ class OGN_XYPlot:
             lora_name = value.get("lora", "None")
             strength_model = float(value.get("strength_model", 1.0))
             strength_clip = float(value.get("strength_clip", strength_model))
-            if str(lora_name).strip().lower() in {"none", "no lora", "disabled", "off"}:
+            if self._is_disabled_lora(lora_name):
                 return model, clip
             if strength_model == 0 and strength_clip == 0:
                 return model, clip
             lora_path = folder_paths.get_full_path_or_raise("loras", lora_name)
             lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
             return comfy.sd.load_lora_for_models(model, clip, lora, strength_model, strength_clip)
-        if value.strip().lower() in {"none", "no lora", "disabled", "off"}:
+        if self._is_disabled_lora(value):
             return model, clip
         parts = [part.strip() for part in value.split(":")]
         lora_name = parts[0]
@@ -718,24 +920,21 @@ class OGN_XYPlot:
         denoise,
     ):
         latent_copy = self._clone_latent(latent)
-        try:
-            import nodes
+        import nodes
 
-            if hasattr(nodes, "common_ksampler"):
-                return nodes.common_ksampler(
-                    model,
-                    seed,
-                    steps,
-                    cfg,
-                    sampler_name,
-                    scheduler,
-                    positive,
-                    negative,
-                    latent_copy,
-                    denoise=denoise,
-                )[0]
-        except Exception:
-            pass
+        if hasattr(nodes, "common_ksampler"):
+            return nodes.common_ksampler(
+                model,
+                seed,
+                steps,
+                cfg,
+                sampler_name,
+                scheduler,
+                positive,
+                negative,
+                latent_copy,
+                denoise=denoise,
+            )[0]
 
         latent_samples = latent_copy["samples"]
         noise_mask = latent_copy.get("noise_mask")
