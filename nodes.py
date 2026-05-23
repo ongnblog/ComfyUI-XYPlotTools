@@ -37,9 +37,8 @@ AXIS_TYPES = [
 ]
 
 UNET_DTYPES = ["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"]
-SEED_MODES = ["Fixed", "Increment per cell",
-              "Increment per row", "Increment per column"]
-
+SEED_MODES = ["Fixed", "Increment per cell", "Increment per row", "Increment per column"]
+LORA_EXTENSIONS = {".ckpt", ".pt", ".pth", ".safetensors", ".bin"}
 
 class AnyType(str):
     def __ne__(self, other):
@@ -67,6 +66,72 @@ def _scheduler_names():
     if hasattr(comfy.samplers, "KSampler") and hasattr(comfy.samplers.KSampler, "SCHEDULERS"):
         return comfy.samplers.KSampler.SCHEDULERS
     return comfy.samplers.SCHEDULER_NAMES
+
+
+def _normalize_model_path(value):
+    return str(value).replace("\\", "/").strip("/")
+
+
+def _model_folder(value):
+    normalized = _normalize_model_path(value)
+    return normalized.rsplit("/", 1)[0] if "/" in normalized else "."
+
+
+def _lora_folders():
+    folders = {_model_folder(value) for value in folder_paths.get_filename_list("loras")}
+    return sorted(folders, key=lambda value: value.lower()) or ["None"]
+
+
+def _lora_files_in_folder(folder):
+    if not folder or str(folder).lower() == "none":
+        return []
+    folder = str(folder).strip().strip('"')
+    if os.path.isdir(folder):
+        return _scan_lora_directory(folder)
+
+    folder = "." if folder == "." else _normalize_model_path(folder)
+    loras = []
+    for root in folder_paths.get_folder_paths("loras"):
+        root = os.path.abspath(root)
+        target = root if folder == "." else os.path.abspath(os.path.join(root, *folder.split("/")))
+        try:
+            if os.path.commonpath([root, target]) != root:
+                continue
+        except ValueError:
+            continue
+        loras.extend(_scan_lora_directory(target))
+    return sorted(loras, key=lambda value: value.lower())
+
+
+def _scan_lora_directory(folder):
+    if not os.path.isdir(folder):
+        return []
+    loras = []
+    for name in sorted(os.listdir(folder), key=lambda value: value.lower()):
+        path = os.path.join(folder, name)
+        if os.path.isfile(path) and os.path.splitext(name)[1].lower() in LORA_EXTENSIONS:
+            loras.append(path)
+    return loras
+
+
+def _lora_folder_signature(folder):
+    signature = []
+    for path in _lora_files_in_folder(folder):
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        signature.append((os.path.normcase(os.path.abspath(path)), stat.st_mtime_ns, stat.st_size))
+    return repr(signature)
+
+
+def _lora_path(lora_name):
+    lora_name = str(lora_name)
+    if os.path.isfile(lora_name):
+        return lora_name
+    if os.path.isabs(lora_name) or re.match(r"^[A-Za-z]:[\\/]", lora_name):
+        return None
+    return folder_paths.get_full_path_or_raise("loras", lora_name)
 
 
 @dataclass
@@ -174,6 +239,7 @@ class OGN_XYLoraAxis:
                     "FLOAT",
                     {"default": 1.0, "min": -20.0, "max": 20.0, "step": 0.05},
                 ),
+                "group_number_1": ("INT", {"default": 1, "min": 1, "max": 10000}),
             },
             "optional": FlexibleOptionalInputType(),
         }
@@ -183,47 +249,105 @@ class OGN_XYLoraAxis:
     FUNCTION = "build_axis"
     CATEGORY = "OGN/XY Plot"
 
-    def build_axis(self, lora_1, strength_model_1, **kwargs):
-        sets = {1: {1: {"lora": lora_1, "strength_model": strength_model_1}}}
+    def build_axis(self, lora_1, strength_model_1, group_number_1, **kwargs):
+        rows = {1: {"lora": lora_1, "strength_model": strength_model_1, "group_number": group_number_1}}
         for key, value in kwargs.items():
             lora_match = re.fullmatch(r"lora_(\d+)", key)
             strength_match = re.fullmatch(r"strength_model_(\d+)", key)
+            group_match = re.fullmatch(r"group_number_(\d+)", key)
             nested_lora_match = re.fullmatch(r"lora(\d+)_(\d+)", key)
-            nested_strength_match = re.fullmatch(
-                r"strength_model_(\d+)_(\d+)", key)
+            nested_strength_match = re.fullmatch(r"strength_model_(\d+)_(\d+)", key)
+            nested_group_match = re.fullmatch(r"group_number_(\d+)_(\d+)", key)
             if lora_match:
-                set_index = int(lora_match.group(1))
-                sets.setdefault(set_index, {}).setdefault(
-                    1, {})["lora"] = value
+                item_index = int(lora_match.group(1))
+                rows.setdefault(item_index, {})["lora"] = value
             elif strength_match:
-                set_index = int(strength_match.group(1))
-                sets.setdefault(set_index, {}).setdefault(
-                    1, {})["strength_model"] = value
+                item_index = int(strength_match.group(1))
+                rows.setdefault(item_index, {})["strength_model"] = value
+            elif group_match:
+                item_index = int(group_match.group(1))
+                rows.setdefault(item_index, {})["group_number"] = value
             elif nested_lora_match:
                 set_index = int(nested_lora_match.group(1))
                 item_index = int(nested_lora_match.group(2))
-                sets.setdefault(set_index, {}).setdefault(
-                    item_index, {})["lora"] = value
+                legacy_index = set_index * 10000 + item_index
+                rows.setdefault(legacy_index, {"group_number": set_index})["lora"] = value
             elif nested_strength_match:
                 set_index = int(nested_strength_match.group(1))
                 item_index = int(nested_strength_match.group(2))
-                sets.setdefault(set_index, {}).setdefault(
-                    item_index, {})["strength_model"] = value
+                legacy_index = set_index * 10000 + item_index
+                rows.setdefault(legacy_index, {"group_number": set_index})["strength_model"] = value
+            elif nested_group_match:
+                set_index = int(nested_group_match.group(1))
+                item_index = int(nested_group_match.group(2))
+                legacy_index = set_index * 10000 + item_index
+                rows.setdefault(legacy_index, {})["group_number"] = value
+
+        groups = {}
+        order = {}
+        for item_index, row in sorted(rows.items()):
+            lora = row.get("lora")
+            if not lora or str(lora).lower() == "none":
+                continue
+            group_number = int(row.get("group_number", item_index))
+            strength = float(row.get("strength_model", row.get("strength", 1.0)))
+            if not math.isfinite(strength):
+                strength = 1.0
+            groups.setdefault(group_number, []).append(
+                {"lora": lora, "strength_model": strength, "strength_clip": strength}
+            )
+            order.setdefault(group_number, item_index)
 
         values = []
-        for set_index, items in sorted(sets.items()):
-            loras = []
-            for _, row in sorted(items.items()):
-                lora = row.get("lora")
-                if not lora or str(lora).lower() == "none":
-                    continue
-                strength = float(
-                    row.get("strength_model", row.get("strength", 1.0)))
-                if not math.isfinite(strength):
-                    strength = 1.0
-                loras.append(
-                    {"lora": lora, "strength_model": strength, "strength_clip": strength})
-            values.append({"set": set_index, "loras": loras})
+        for group_number in sorted(groups, key=lambda value: (order.get(value, value), value)):
+            values.append({"set": group_number, "loras": groups[group_number]})
+        return ({"type": "LoRA", "values": values},)
+
+
+class OGN_XYLoraFolderSelectAxis:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "lora_folder": ("STRING", {"default": "", "multiline": False}),
+                "strength_model": (
+                    "FLOAT",
+                    {"default": 1.0, "min": -20.0, "max": 20.0, "step": 0.05},
+                ),
+            },
+        }
+
+    RETURN_TYPES = ("OGN_XY_AXIS",)
+    RETURN_NAMES = ("axis",)
+    FUNCTION = "build_axis"
+    CATEGORY = "OGN/XY Plot"
+
+    @classmethod
+    def IS_CHANGED(cls, lora_folder, strength_model):
+        return float("NaN")
+
+    def build_axis(self, lora_folder, strength_model):
+        strength = float(strength_model)
+        if not math.isfinite(strength):
+            strength = 1.0
+
+        loras = _lora_files_in_folder(lora_folder)
+        if not loras:
+            raise ValueError(f"No LoRA files found in folder: {lora_folder}")
+
+        values = [
+            {
+                "set": index,
+                "loras": [
+                    {
+                        "lora": lora,
+                        "strength_model": strength,
+                        "strength_clip": strength,
+                    }
+                ],
+            }
+            for index, lora in enumerate(loras, start=1)
+        ]
         return ({"type": "LoRA", "values": values},)
 
 
@@ -885,7 +1009,9 @@ class OGN_XYPlot:
                 return model, clip
             if strength_model == 0 and strength_clip == 0:
                 return model, clip
-            lora_path = folder_paths.get_full_path_or_raise("loras", lora_name)
+            lora_path = _lora_path(lora_name)
+            if lora_path is None:
+                return model, clip
             lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
             return comfy.sd.load_lora_for_models(model, clip, lora, strength_model, strength_clip)
         if self._is_disabled_lora(value):
@@ -898,7 +1024,9 @@ class OGN_XYPlot:
             parts) > 2 and parts[2] else strength_model
         if strength_model == 0 and strength_clip == 0:
             return model, clip
-        lora_path = folder_paths.get_full_path_or_raise("loras", lora_name)
+        lora_path = _lora_path(lora_name)
+        if lora_path is None:
+            return model, clip
         lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
         return comfy.sd.load_lora_for_models(model, clip, lora, strength_model, strength_clip)
 
@@ -1093,7 +1221,7 @@ class OGN_XYPlot:
             return
         draw.rectangle((x, y, x + width, y + height), fill=(35, 35, 35))
         max_text_width = max(1, width - padding * 2)
-        lines = self._wrapped_lines(label, font, max_text_width)
+        font, lines = self._fit_label_text(label, font, max_text_width, max(1, height - padding * 2))
         line_h = self._text_size(font, "Ag")[1] + 2
         total_h = line_h * len(lines)
         cursor_y = y + max(padding, (height - total_h) // 2)
@@ -1104,19 +1232,51 @@ class OGN_XYPlot:
                       fill=(235, 235, 235), font=font)
             cursor_y += line_h
 
-    def _wrapped_lines(self, text, font, max_width):
+    def _fit_label_text(self, label, font, max_width, max_height):
+        label = "" if label is None else str(label)
+        size = getattr(font, "size", 12)
+        min_size = 6
+        for candidate_size in range(size, min_size - 1, -1):
+            candidate_font = self._font(candidate_size)
+            lines, truncated = self._wrapped_lines(label, candidate_font, max_width, max_height=max_height, return_truncated=True)
+            if not truncated and all(self._text_size(candidate_font, line)[0] <= max_width for line in lines):
+                return candidate_font, lines
+        fitted_font = self._font(min_size)
+        return fitted_font, self._ellipsized_lines(label, fitted_font, max_width, max_height)
+
+    def _wrapped_lines(self, text, font, max_width, max_height=320, return_truncated=False):
         if not text:
-            return [""]
+            return ([""], False) if return_truncated else [""]
         chunks = []
         for raw_line in str(text).splitlines():
             if not raw_line:
                 chunks.append("")
                 continue
-            estimate = max(
-                8, int(max_width / max(1, self._text_size(font, "M")[0])))
-            chunks.extend(textwrap.wrap(raw_line, width=estimate,
-                          break_long_words=True) or [""])
-        return chunks[: max(1, math.floor(320 / max(1, self._text_size(font, "Ag")[1])))]
+            estimate = max(8, int(max_width / max(1, self._text_size(font, "M")[0])))
+            chunks.extend(textwrap.wrap(raw_line, width=estimate, break_long_words=True) or [""])
+        line_h = self._text_size(font, "Ag")[1] + 2
+        max_lines = max(1, math.floor(max_height / max(1, line_h)))
+        lines = chunks[:max_lines]
+        truncated = len(chunks) > max_lines
+        return (lines, truncated) if return_truncated else lines
+
+    def _ellipsized_lines(self, text, font, max_width, max_height):
+        lines, truncated = self._wrapped_lines(text, font, max_width, max_height=max_height, return_truncated=True)
+        if not truncated:
+            return lines
+        if not lines:
+            return [""]
+        lines[-1] = self._ellipsize(lines[-1], font, max_width)
+        return lines
+
+    def _ellipsize(self, text, font, max_width):
+        suffix = "..."
+        if self._text_size(font, suffix)[0] > max_width:
+            return ""
+        text = str(text)
+        while text and self._text_size(font, text + suffix)[0] > max_width:
+            text = text[:-1]
+        return text + suffix
 
     def _font(self, size):
         font_candidates = {
@@ -1163,6 +1323,7 @@ NODE_CLASS_MAPPINGS = {
     "OGN_XYSamplerAxis": OGN_XYSamplerAxis,
     "OGN_XYLoraAxis": OGN_XYLoraAxis,
     "OGN_XYLoraEpochRangeAxis": OGN_XYLoraEpochRangeAxis,
+    "OGN_XYLoraFolderSelectAxis": OGN_XYLoraFolderSelectAxis,
     "OGN_XYPromptSRAxis": OGN_XYPromptSRAxis,
     "OGN_XYPrimitiveAxis": OGN_XYPrimitiveAxis,
 }
@@ -1174,6 +1335,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "OGN_XYSamplerAxis": "OGN_XY Sampler Axis",
     "OGN_XYLoraAxis": "OGN_XY LoRA Axis",
     "OGN_XYLoraEpochRangeAxis": "OGN_XY LoRA Epoch Range Axis",
+    "OGN_XYLoraFolderSelectAxis": "OGN_XY LoRA FolderSelect Axis",
     "OGN_XYPromptSRAxis": "OGN_XY Prompt S/R Axis",
     "OGN_XYPrimitiveAxis": "OGN_XY Primitive Axis",
 }
