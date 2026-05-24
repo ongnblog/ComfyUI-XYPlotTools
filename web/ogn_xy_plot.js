@@ -801,58 +801,64 @@ function requestNodeRedraw() {
     app.graph?.setDirtyCanvas?.(true, false);
 }
 
+const CELL_PROGRESS_SLOT_START_Y = 40;
+const CELL_PROGRESS_BAR_X = 18;
+const CELL_PROGRESS_BAR_Y = 18;
+const CELL_PROGRESS_BAR_HEIGHT = 16;
+
 function drawCellProgress(node, ctx) {
     const progress = node.ognCellProgress;
-    if (!progress?.max || node.flags?.collapsed) return;
+    if (node.flags?.collapsed) return;
 
-    const width = Math.max(0, node.size[0] - 24);
-    const barX = 12;
-    const barY = node.ognCellProgressY ?? 0;
-    const barH = 22;
-    const ratio = Math.min(1, Math.max(0, progress.value / progress.max));
+    const width = Math.max(0, node.size[0] - CELL_PROGRESS_BAR_X * 2);
+    const barX = CELL_PROGRESS_BAR_X;
+    const barY = CELL_PROGRESS_BAR_Y;
+    const barH = CELL_PROGRESS_BAR_HEIGHT;
+    const value = Number(progress?.value) || 0;
+    const max = Number(progress?.max) || 0;
+    const ratio = max > 0 ? Math.min(1, Math.max(0, value / max)) : 0;
 
     ctx.save();
     ctx.beginPath();
-    ctx.roundRect(barX, barY, width, barH, 4);
-    ctx.fillStyle = "rgba(24, 24, 24, 0.86)";
+    ctx.roundRect(barX, barY, width, barH, 5);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
     ctx.fill();
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
+    ctx.stroke();
 
     if (ratio > 0) {
         ctx.beginPath();
-        ctx.roundRect(barX, barY, width * ratio, barH, 4);
-        ctx.fillStyle = "#3f9f62";
+        ctx.roundRect(barX, barY, width * ratio, barH, 5);
+        ctx.fillStyle = "#4b8ecf";
         ctx.fill();
     }
 
-    ctx.fillStyle = "#f2f2f2";
-    ctx.font = "bold 12px sans-serif";
+    ctx.fillStyle = max > 0 ? "#f2f2f2" : "rgba(242, 242, 242, 0.62)";
+    ctx.font = "11px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(`Cells: ${progress.value}/${progress.max}`, barX + width / 2, barY + barH / 2);
+    ctx.fillText(max > 0 ? `Cells: ${value}/${max}` : "Cells: -/-", barX + width / 2, barY + barH / 2);
     ctx.restore();
 }
 
-function ensureCellProgressWidget(node) {
-    if (!node.widgets || node.ognCellProgressWidget) return;
+function removeCellProgressWidget(node) {
+    if (!node.widgets || !node.ognCellProgressWidget) return;
 
-    node.ognCellProgressWidget = {
-        type: "custom",
-        name: "ogn_cell_progress",
-        value: null,
-        serialize: false,
-        options: { serialize: false },
-        computeSize: () => [0, 30],
-        draw(ctx, currentNode, width, y) {
-            currentNode.ognCellProgressY = y + 4;
-            drawCellProgress(currentNode, ctx);
-        },
-    };
-    node.widgets.unshift(node.ognCellProgressWidget);
+    const index = node.widgets.indexOf(node.ognCellProgressWidget);
+    if (index >= 0) {
+        node.widgets.splice(index, 1);
+    }
+    delete node.ognCellProgressWidget;
+}
+
+function ensureCellProgressLayout(node) {
+    removeCellProgressWidget(node);
+    node.constructor.slot_start_y = Math.max(node.constructor.slot_start_y ?? 0, CELL_PROGRESS_SLOT_START_Y);
     queueNodeResize(node);
 }
 
 function scheduleCellProgressWidget(node) {
-    requestAnimationFrame(() => ensureCellProgressWidget(node));
+    requestAnimationFrame(() => ensureCellProgressLayout(node));
 }
 
 function removeSerializedCellProgressValue(info) {
@@ -976,6 +982,8 @@ app.registerExtension({
             return;
         }
         if (config.cellProgress) {
+            nodeType.slot_start_y = Math.max(nodeType.slot_start_y ?? 0, CELL_PROGRESS_SLOT_START_Y);
+
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 onNodeCreated?.apply(this, arguments);
@@ -987,8 +995,14 @@ app.registerExtension({
             nodeType.prototype.configure = function (info) {
                 removeSerializedCellProgressValue(info);
                 configure?.apply(this, arguments);
-                ensureCellProgressWidget(this);
+                ensureCellProgressLayout(this);
                 ensureCellSaveWidgets(this);
+            };
+
+            const onDrawForeground = nodeType.prototype.onDrawForeground;
+            nodeType.prototype.onDrawForeground = function (ctx) {
+                onDrawForeground?.apply(this, arguments);
+                drawCellProgress(this, ctx);
             };
             return;
         }
