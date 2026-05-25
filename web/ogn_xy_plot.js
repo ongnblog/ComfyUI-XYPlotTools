@@ -32,6 +32,9 @@ const NODE_CONFIG = {
         label: "LoRA Epoch Range",
         loraEpochRange: true,
     },
+    OGN_XYLoraStepRangeAxis: {
+        label: "LoRA Step Range",
+    },
     OGN_XYPromptSRAxis: {
         label: "Prompt S/R",
         button: "+ Add Replacement",

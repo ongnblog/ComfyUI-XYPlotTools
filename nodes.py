@@ -389,6 +389,24 @@ def _parse_epoch_lora_path(name):
     return f"{prefix}{base_stem}.safetensors", end_epoch
 
 
+def _parse_step_lora_path(name):
+    text = str(name or "").strip().replace("\\", "/")
+    stem = _strip_lora_ext(text)
+    if "/" in stem:
+        folder, file_stem = stem.rsplit("/", 1)
+        prefix = f"{folder}/"
+    else:
+        prefix, file_stem = "", stem
+
+    match = re.fullmatch(r"(.+)-step0*([1-9]\d*)", file_stem)
+    if not match:
+        return None, None
+
+    base_stem = match.group(1)
+    end_step = int(match.group(2))
+    return f"{prefix}{base_stem}.safetensors", end_step
+
+
 def _lora_file_exists(name):
     return str(name or "").replace("\\", "/") in {
         lora.replace("\\", "/") for lora in folder_paths.get_filename_list("loras")
@@ -396,21 +414,29 @@ def _lora_file_exists(name):
 
 
 class OGN_XYLoraEpochRangeAxis:
+    DESCRIPTION = (
+        "Builds a LoRA axis from kohya-ss/sd-scripts epoch checkpoint files named "
+        "<output_name>-000001.safetensors, <output_name>-000002.safetensors, and so on. "
+        "Use this when LoRA training was saved with save_every_n_epochs."
+    )
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "lora_file": (folder_paths.get_filename_list("loras"),),
-                "start_epoch": ("INT", {"default": 1, "min": 1, "max": 999999, "step": 1}),
-                "last_epoch": ("INT", {"default": 1, "min": 1, "max": 999999, "step": 1}),
-                "epoch_interval": ("INT", {"default": 1, "min": 1, "max": 999999, "step": 1}),
-                "strength_model": ("FLOAT", {"default": 1.0, "min": -20.0, "max": 20.0, "step": 0.05}),
-                "include_no_lora": ("BOOLEAN", {"default": False}),
-                "include_base_lora": ("BOOLEAN", {"default": True}),
-                "skip_missing": ("BOOLEAN", {"default": True}),
-                "use_detected_epoch": ("BOOLEAN", {"default": False}),
-                "show_relative_path": ("BOOLEAN", {"default": False}),
-                "base_lora_name": ("STRING", {"default": ""}),
+                "lora_file": (folder_paths.get_filename_list("loras"), {
+                    "tooltip": "Base LoRA or an epoch checkpoint. Epoch checkpoints are expected to look like name-000001.safetensors."
+                }),
+                "start_epoch": ("INT", {"default": 1, "min": 1, "max": 999999, "step": 1, "tooltip": "First epoch number to include."}),
+                "last_epoch": ("INT", {"default": 1, "min": 1, "max": 999999, "step": 1, "tooltip": "Last epoch number to include."}),
+                "epoch_interval": ("INT", {"default": 1, "min": 1, "max": 999999, "step": 1, "tooltip": "Include every N epochs between start_epoch and last_epoch."}),
+                "strength_model": ("FLOAT", {"default": 1.0, "min": -20.0, "max": 20.0, "step": 0.05, "tooltip": "LoRA strength applied to both model and CLIP."}),
+                "include_no_lora": ("BOOLEAN", {"default": False, "tooltip": "Add a first axis value with no LoRA loaded."}),
+                "include_base_lora": ("BOOLEAN", {"default": True, "tooltip": "Also include the base LoRA file without an epoch suffix."}),
+                "skip_missing": ("BOOLEAN", {"default": True, "tooltip": "Skip checkpoint filenames that are not present in ComfyUI's LoRA list."}),
+                "use_detected_epoch": ("BOOLEAN", {"default": False, "tooltip": "When lora_file is an epoch checkpoint, use its suffix as the detected last epoch."}),
+                "show_relative_path": ("BOOLEAN", {"default": False, "tooltip": "Show the relative LoRA path in the read-only base_lora_name display."}),
+                "base_lora_name": ("STRING", {"default": "", "tooltip": "Display only. Shows the inferred base LoRA name used for range generation."}),
             }
         }
 
@@ -493,6 +519,113 @@ class OGN_XYLoraEpochRangeAxis:
             raise ValueError(
                 "No LoRA files matched the epoch range. "
                 "Check lora_file, last_epoch, start_epoch, epoch_interval, or disable skip_missing."
+            )
+
+        return ({"type": "LoRA", "values": values},)
+
+
+class OGN_XYLoraStepRangeAxis:
+    DESCRIPTION = (
+        "Builds a LoRA axis from kohya-ss/sd-scripts step checkpoint files named "
+        "<output_name>-step00000001.safetensors, <output_name>-step00000002.safetensors, and so on. "
+        "Use this when LoRA training was saved with save_every_n_steps."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "lora_file": (folder_paths.get_filename_list("loras"), {
+                    "tooltip": "Base LoRA or a step checkpoint. Step checkpoints are expected to look like name-step00000001.safetensors."
+                }),
+                "start_step": ("INT", {"default": 1, "min": 1, "max": 999999999, "step": 1, "tooltip": "First training step number to include."}),
+                "last_step": ("INT", {"default": 1, "min": 1, "max": 999999999, "step": 1, "tooltip": "Last training step number to include."}),
+                "step_interval": ("INT", {"default": 1, "min": 1, "max": 999999999, "step": 1, "tooltip": "Include every N steps between start_step and last_step."}),
+                "strength_model": ("FLOAT", {"default": 1.0, "min": -20.0, "max": 20.0, "step": 0.05, "tooltip": "LoRA strength applied to both model and CLIP."}),
+                "include_no_lora": ("BOOLEAN", {"default": False, "tooltip": "Add a first axis value with no LoRA loaded."}),
+                "include_base_lora": ("BOOLEAN", {"default": True, "tooltip": "Also include the base LoRA file without a step suffix."}),
+                "skip_missing": ("BOOLEAN", {"default": True, "tooltip": "Skip checkpoint filenames that are not present in ComfyUI's LoRA list."}),
+                "use_detected_step": ("BOOLEAN", {"default": False, "tooltip": "When lora_file is a step checkpoint, use its suffix as the detected last step."}),
+            }
+        }
+
+    RETURN_TYPES = ("OGN_XY_AXIS",)
+    RETURN_NAMES = ("axis",)
+    FUNCTION = "build_axis"
+    CATEGORY = "OGN/XY Plot"
+
+    def build_axis(
+        self,
+        lora_file,
+        start_step,
+        last_step,
+        step_interval,
+        strength_model,
+        include_no_lora,
+        include_base_lora,
+        skip_missing,
+        use_detected_step,
+    ):
+        selected_lora = _ensure_safetensors(lora_file)
+
+        if use_detected_step:
+            parsed_base, parsed_step = _parse_step_lora_path(selected_lora)
+            if parsed_base is None:
+                raise ValueError(
+                    "use_detected_step is enabled, but lora_file is not a step file.")
+            base_lora = _ensure_safetensors(parsed_base)
+            if int(last_step) <= 1:
+                last_step = parsed_step
+        else:
+            base_lora = selected_lora
+
+        base_stem = _strip_lora_ext(base_lora)
+
+        start_step = max(1, int(start_step))
+        last_step = max(start_step, int(last_step))
+        step_interval = max(1, int(step_interval))
+        strength = _safe_lora_strength(strength_model)
+
+        values = []
+        set_index = 1
+
+        if include_no_lora:
+            values.append({
+                "set": set_index,
+                "loras": [],
+            })
+            set_index += 1
+
+        for step in range(start_step, last_step + 1, step_interval):
+            lora = f"{base_stem}-step{step:08d}.safetensors"
+            if skip_missing and not _lora_file_exists(lora):
+                continue
+
+            values.append({
+                "set": set_index,
+                "loras": [{
+                    "lora": lora,
+                    "strength_model": strength,
+                    "strength_clip": strength,
+                }],
+            })
+            set_index += 1
+
+        if include_base_lora:
+            if not skip_missing or _lora_file_exists(base_lora):
+                values.append({
+                    "set": set_index,
+                    "loras": [{
+                        "lora": base_lora,
+                        "strength_model": strength,
+                        "strength_clip": strength,
+                    }],
+                })
+
+        if not any(value.get("loras") for value in values):
+            raise ValueError(
+                "No LoRA files matched the step range. "
+                "Check lora_file, last_step, start_step, step_interval, or disable skip_missing."
             )
 
         return ({"type": "LoRA", "values": values},)
@@ -1323,6 +1456,7 @@ NODE_CLASS_MAPPINGS = {
     "OGN_XYSamplerAxis": OGN_XYSamplerAxis,
     "OGN_XYLoraAxis": OGN_XYLoraAxis,
     "OGN_XYLoraEpochRangeAxis": OGN_XYLoraEpochRangeAxis,
+    "OGN_XYLoraStepRangeAxis": OGN_XYLoraStepRangeAxis,
     "OGN_XYLoraFolderSelectAxis": OGN_XYLoraFolderSelectAxis,
     "OGN_XYPromptSRAxis": OGN_XYPromptSRAxis,
     "OGN_XYPrimitiveAxis": OGN_XYPrimitiveAxis,
@@ -1335,6 +1469,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "OGN_XYSamplerAxis": "OGN_XY Sampler Axis",
     "OGN_XYLoraAxis": "OGN_XY LoRA Axis",
     "OGN_XYLoraEpochRangeAxis": "OGN_XY LoRA Epoch Range Axis",
+    "OGN_XYLoraStepRangeAxis": "OGN_XY LoRA Step Range Axis",
     "OGN_XYLoraFolderSelectAxis": "OGN_XY LoRA FolderSelect Axis",
     "OGN_XYPromptSRAxis": "OGN_XY Prompt S/R Axis",
     "OGN_XYPrimitiveAxis": "OGN_XY Primitive Axis",
