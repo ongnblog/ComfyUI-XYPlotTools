@@ -400,15 +400,23 @@ class OGN_XYPrimitiveAxis:
     CATEGORY = "OGN/XY Plot"
 
     def build_axis(self, axis_type, value_1, **kwargs):
-        values = []
-        for value in [value_1] + _sorted_kwargs(kwargs, "value_"):
-            if value is None:
+        values = [value_1] + _sorted_kwargs(kwargs, "value_")
+
+        parsed_values = []
+        for value in values:
+            if value is None or str(value).strip() == "":
                 continue
-            for line in str(value).replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-                line = line.strip()
-                if line:
-                    values.append(line)
-        return ({"type": axis_type, "values": values},)
+
+            if axis_type == "Seed":
+                parsed_values.extend(
+                    v.strip()
+                    for v in str(value).replace(",", "\n").splitlines()
+                    if v.strip()
+                )
+            else:
+                parsed_values.append(value)
+
+        return ({"type": axis_type, "values": parsed_values},)
 
 
 class OGN_XYPlot:
