@@ -2,6 +2,7 @@ import copy
 import datetime
 import math
 import os
+import random
 import re
 import textwrap
 from dataclasses import dataclass, field
@@ -788,6 +789,8 @@ class OGN_XYPlot:
     ):
         x_type, x_values = self._normalize_axis(x_axis)
         y_type, y_values = self._normalize_axis(y_axis)
+        x_values = self._resolve_seed_axis_values(x_type, x_values)
+        y_values = self._resolve_seed_axis_values(y_type, y_values)
         base = PlotState(
             model=model,
             clip=clip,
@@ -992,6 +995,17 @@ class OGN_XYPlot:
             raise ValueError(f"{axis_type} axis needs at least one value.")
         return axis_type, values
 
+    def _resolve_seed_axis_values(self, axis_type, values):
+        if axis_type != "Seed":
+            return values
+        resolved = []
+        for value in values:
+            seed = int(value)
+            if seed == -1:
+                seed = self._random_seed()
+            resolved.append(str(seed))
+        return resolved
+
     def _apply_axis(self, state, axis_type, value, axis_values, diffusion_weight_dtype):
         if axis_type == "None":
             return
@@ -1022,7 +1036,8 @@ class OGN_XYPlot:
         elif axis_type == "Negative Prompt":
             state.negative_prompt = value
         elif axis_type == "Seed":
-            state.seed = int(value)
+            seed = int(value)
+            state.seed = self._random_seed() if seed == -1 else seed
         elif axis_type == "Steps":
             state.steps = int(value)
         elif axis_type == "CFG":
@@ -1253,6 +1268,9 @@ class OGN_XYPlot:
         if mode == "Increment per column":
             return seed + x_index
         return seed
+
+    def _random_seed(self):
+        return random.randint(0, 0xFFFFFFFFFFFFFFFF)
 
     def _label(self, axis_type, value):
         if axis_type == "None":
